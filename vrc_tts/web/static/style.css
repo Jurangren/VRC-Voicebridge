@@ -1,0 +1,82 @@
+body {
+  margin: 0;
+  background: #12151c;
+  color: #e9eef7;
+  font-family: "Microsoft YaHei", Segoe UI, sans-serif;
+}
+
+main {
+  max-width: 980px;
+  margin: 0 auto;
+  padding: 28px;
+}
+
+section {
+  background: #1b202b;
+  border: 1px solid #303849;
+  border-radius: 12px;
+  padding: 16px;
+  margin: 16px 0;
+}
+
+label {
+  display: block;
+  margin: 10px 0;
+}
+
+input[type="text"], input[type="password"], input[type="number"], input:not([type]), select {
+  width: 100%;
+  box-sizing: border-box;
+  margin-top: 6px;
+  padding: 8px 10px;
+  color: #f7fbff;
+  background: #0f1218;
+  border: 1px solid #3a465a;
+  border-radius: 8px;
+}
+
+button {
+  cursor: pointer;
+  border: 0;
+  border-radius: 8px;
+  padding: 10px 14px;
+  margin: 4px;
+  color: white;
+  background: #3577f0;
+}
+
+button:hover {
+  background: #4d8aff;
+}
+
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+
+.hint {
+  color: #9aa7bd;
+}
+
+.translation-settings, .mode-settings {
+  margin: 12px 0;
+  padding: 12px;
+  border: 1px solid #303849;
+  border-radius: 10px;
+  background: #151a23;
+}
+
+.translation-settings h3, .mode-settings h3 {
+  margin: 0 0 8px;
+  font-size: 16px;
+}
+
+pre {
+  overflow: auto;
+  white-space: pre-wrap;
+  background: #0f1218;
+  border-radius: 8px;
+  padding: 12px;
+}

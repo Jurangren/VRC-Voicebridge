@@ -1,0 +1,48 @@
+# Python cache / bytecode
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# Test / tooling cache
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Local runtime config and secrets
+config.json
+config.*.json
+!config.example.json
+.env
+.env.*
+*.env
+secrets.*
+credentials.*
+*.key
+*.pem
+
+# Logs / temp files
+*.log
+logs/
+tmp/
+temp/
+*.tmp
+
+# Generated audio / local media
+*.wav
+*.mp3
+*.ogg
+*.flac
+
+# IDE / OS files
+.vscode/
+.idea/
+Thumbs.db
+Desktop.ini
