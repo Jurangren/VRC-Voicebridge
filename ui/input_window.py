@@ -69,10 +69,11 @@ class InputWindow:
             self.entry.focus_force()
 
     def set_text(self, text: str) -> None:
-        if not text or self.entry is None:
+        if self.entry is None:
             return
         self.entry.delete(0, tk.END)
-        self.entry.insert(0, text)
+        if text:
+            self.entry.insert(0, text)
         self.entry.icursor(tk.END)
 
     def hide(self, notify: bool = True) -> None:
