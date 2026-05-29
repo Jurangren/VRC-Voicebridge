@@ -3,16 +3,16 @@ from __future__ import annotations
 import tkinter as tk
 import webbrowser
 
-from vrc_tts.core.config import ConfigManager
-from vrc_tts.core.errors import ErrorHandler
-from vrc_tts.core.pipeline import AppPipeline
-from vrc_tts.services.mic_listener import MicrophoneListener
-from vrc_tts.services.osc_client import VrcOscClient
-from vrc_tts.ui.hotkey import HotkeyManager
-from vrc_tts.ui.input_window import InputWindow
-from vrc_tts.ui.status_overlay import StatusOverlay
-from vrc_tts.ui.tray_app import TrayApp
-from vrc_tts.web.server import create_web_app, start_web_server
+from core.config import ConfigManager
+from core.errors import ErrorHandler
+from core.pipeline import AppPipeline
+from services.mic_listener import MicrophoneListener
+from services.osc_client import VrcOscClient
+from ui.hotkey import HotkeyManager
+from ui.input_window import InputWindow
+from ui.status_overlay import StatusOverlay
+from ui.tray_app import TrayApp
+from web.server import create_web_app, start_web_server
 
 
 class Application:
@@ -21,7 +21,7 @@ class Application:
     def __init__(self):
         self.root = tk.Tk()
         self.root.withdraw()
-        self.root.title("VRC TTS Text")
+        self.root.title("VRC VoiceBridge")
 
         self.config_manager = ConfigManager()
         self.error_handler = ErrorHandler(self.root)
@@ -73,7 +73,8 @@ class Application:
         if self.input_window.is_visible():
             self.input_window.hide()
             return
-        self.input_window.show()
+        initial_text = self._consume_pending_microphone_text()
+        self.input_window.show(initial_text)
 
     def show_typing_bubble(self) -> None:
         if self._typing_job is not None:
@@ -219,6 +220,13 @@ class Application:
             self._pending_mic_job = None
         self._pending_mic_text = ""
         self._pending_mic_countdown_seconds = 0
+
+    def _consume_pending_microphone_text(self) -> str:
+        text = self._pending_mic_text
+        if text:
+            self._clear_pending_microphone_text()
+            self.status_overlay.show_done("已填入语音识别结果", hide_after_ms=1200)
+        return text
 
     def quit(self) -> None:
         self.hide_typing_bubble()

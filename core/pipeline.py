@@ -4,12 +4,12 @@ import threading
 from pathlib import Path
 from typing import Callable
 
-from vrc_tts.core.config import ConfigManager
-from vrc_tts.core.errors import ErrorHandler
-from vrc_tts.services.audio_player import play_audio_to_virtual_mic
-from vrc_tts.services.osc_client import VrcOscClient
-from vrc_tts.services.translator import translate_text
-from vrc_tts.services.tts_client import synthesize_tts
+from core.config import ConfigManager
+from core.errors import ErrorHandler
+from services.audio_player import play_audio_to_virtual_mic
+from services.osc_client import VrcOscClient
+from services.translator import translate_text
+from services.tts_client import synthesize_tts
 
 
 class AppPipeline:

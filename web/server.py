@@ -5,11 +5,11 @@ from pathlib import Path
 
 from flask import Flask, jsonify, redirect, render_template, request, url_for
 
-from vrc_tts.core.config import ConfigManager
-from vrc_tts.core.errors import ErrorHandler
-from vrc_tts.services.audio_player import list_input_devices, list_output_devices
-from vrc_tts.services.osc_client import VrcOscClient
-from vrc_tts.services.tts_client import synthesize_tts
+from core.config import ConfigManager
+from core.errors import ErrorHandler
+from services.audio_player import list_input_devices, list_output_devices
+from services.osc_client import VrcOscClient
+from services.tts_client import synthesize_tts
 
 
 def create_web_app(config_manager: ConfigManager, error_handler: ErrorHandler, show_input_callback, reload_hotkey_callback) -> Flask:
@@ -42,7 +42,7 @@ def create_web_app(config_manager: ConfigManager, error_handler: ErrorHandler, s
     @app.post("/test-osc")
     def test_osc():
         try:
-            VrcOscClient(config_manager.get()).send_chatbox("VRC TTS Text OSC 测试")
+            VrcOscClient(config_manager.get()).send_chatbox("VRC VoiceBridge OSC 测试")
             return jsonify({"ok": True})
         except Exception as exc:
             error_handler.report("OSC 测试失败", exc)

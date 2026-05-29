@@ -3,7 +3,7 @@ from __future__ import annotations
 import tkinter as tk
 from tkinter import ttk
 
-from vrc_tts.core.config import ConfigManager
+from core.config import ConfigManager
 
 
 class StatusOverlay:

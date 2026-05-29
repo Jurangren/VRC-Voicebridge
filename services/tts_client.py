@@ -6,8 +6,8 @@ from pathlib import Path
 
 from openai import OpenAI
 
-from vrc_tts.core.config import AppConfig
-from vrc_tts.core.errors import AppError
+from core.config import AppConfig
+from core.errors import AppError
 
 
 def synthesize_tts(text: str, config: AppConfig) -> Path:
@@ -32,7 +32,7 @@ def synthesize_tts(text: str, config: AppConfig) -> Path:
                 response_format=config.openai_tts_format,
             )
 
-            output_path = Path(tempfile.gettempdir()) / f"vrc_tts_{int(time.time() * 1000)}{suffix}"
+            output_path = Path(tempfile.gettempdir()) / f"_{int(time.time() * 1000)}{suffix}"
             if hasattr(response, "write_to_file"):
                 response.write_to_file(str(output_path))
             else:

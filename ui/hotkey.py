@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import keyboard
 
-from vrc_tts.core.errors import AppError
+from core.errors import AppError
 
 
 class HotkeyManager:

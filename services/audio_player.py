@@ -6,8 +6,8 @@ from pathlib import Path
 
 import pyaudio
 
-from vrc_tts.core.config import AppConfig
-from vrc_tts.core.errors import AppError
+from core.config import AppConfig
+from core.errors import AppError
 
 
 def list_output_devices() -> list[dict]:

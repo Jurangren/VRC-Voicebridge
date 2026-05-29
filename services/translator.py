@@ -10,8 +10,8 @@ from collections.abc import Callable
 
 from deep_translator import GoogleTranslator
 
-from vrc_tts.core.config import AppConfig
-from vrc_tts.core.errors import AppError
+from core.config import AppConfig
+from core.errors import AppError
 
 
 def translate_text(text: str, config: AppConfig) -> str:

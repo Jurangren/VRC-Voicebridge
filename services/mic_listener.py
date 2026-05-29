@@ -6,8 +6,8 @@ from typing import Callable
 
 import speech_recognition as sr
 
-from vrc_tts.core.config import AppConfig
-from vrc_tts.core.errors import AppError
+from core.config import AppConfig
+from core.errors import AppError
 
 
 class MicrophoneListener:

@@ -22,16 +22,17 @@ class InputWindow:
         self.window: tk.Toplevel | None = None
         self.entry: ttk.Entry | None = None
 
-    def show(self) -> None:
+    def show(self, initial_text: str = "") -> None:
         self._notify_show()
         if self.window is not None and self.window.winfo_exists():
             self.window.deiconify()
             self.window.lift()
+            self.set_text(initial_text)
             self._focus_entry()
             return
 
         self.window = tk.Toplevel(self.root)
-        self.window.title("VRChat TTS 输入")
+        self.window.title("VRC VoiceBridge 输入")
         self.window.attributes("-topmost", True)
         self.window.resizable(False, False)
         self.window.geometry("520x92+420+260")
@@ -44,6 +45,7 @@ class InputWindow:
         self.entry.pack(fill="x", pady=(8, 0))
         self.entry.bind("<Return>", self._submit)
         self.entry.bind("<Escape>", lambda _event: self.hide())
+        self.set_text(initial_text)
         self._focus_entry()
 
     def is_visible(self) -> bool:
@@ -65,6 +67,13 @@ class InputWindow:
             self.window.lift()
             self.window.focus_force()
             self.entry.focus_force()
+
+    def set_text(self, text: str) -> None:
+        if not text or self.entry is None:
+            return
+        self.entry.delete(0, tk.END)
+        self.entry.insert(0, text)
+        self.entry.icursor(tk.END)
 
     def hide(self, notify: bool = True) -> None:
         if self.window is not None and self.window.winfo_exists():

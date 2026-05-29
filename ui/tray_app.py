@@ -6,7 +6,7 @@ import webbrowser
 import pystray
 from PIL import Image, ImageDraw
 
-from vrc_tts.core.config import ConfigManager
+from core.config import ConfigManager
 
 
 class TrayApp:
@@ -30,9 +30,9 @@ class TrayApp:
         draw.ellipse((10, 10, 54, 54), fill="#4aa3ff")
         draw.text((23, 20), "T", fill="white")
         self.icon = pystray.Icon(
-            "vrc_tts_text",
+            "",
             image,
-            "VRC TTS Text",
+            "VRC VoiceBridge",
             menu=pystray.Menu(
                 pystray.MenuItem("打开输入框", lambda: self.show_input_callback()),
                 pystray.MenuItem("打开设置面板", lambda: webbrowser.open(self._settings_url())),

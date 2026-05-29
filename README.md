@@ -1,6 +1,6 @@
-# VRC TTS Text
+# VRC VoiceBridge
 
-VRC TTS Text 是一个面向 Windows 和 VRChat 的 Python 托盘后台程序。程序运行后，按下自定义全局热键会弹出一个小输入框；用户输入中文并回车后，程序会自动把原文翻译成日文，调用 OpenAI TTS 生成语音，通过 VRChat OSC 显示聊天气泡并控制开麦，然后把 TTS 音频播放到虚拟麦克风，播放结束后自动关麦。
+VRC VoiceBridge 是一个面向 Windows 和 VRChat 的 Python 托盘后台程序。程序运行后，按下自定义全局热键会弹出一个小输入框；用户输入中文并回车后，程序会自动把原文翻译成日文，调用 OpenAI TTS 生成语音，通过 VRChat OSC 显示聊天气泡并控制开麦，然后把 TTS 音频播放到虚拟麦克风，播放结束后自动关麦。
 
 默认聊天气泡格式：
 
@@ -48,38 +48,36 @@ VRC TTS Text 是一个面向 Windows 和 VRChat 的 Python 托盘后台程序。
 ## 项目结构
 
 ```text
-vrc-tts-text/
+vrc-voicebridge/
   main.py                         程序入口
   requirements.txt                Python 依赖
   README.md                       项目说明
   config.example.json             无敏感信息的配置示例
-  start-vrc-tts.bat               Windows 快速启动脚本
-  vrc_tts/
+  start-vrc-voicebridge.bat       Windows 快速启动脚本
+  core/
     __init__.py
-    core/
-      __init__.py
-      config.py                   配置模型、配置读写、默认参数
-      errors.py                   统一错误类型和最近错误记录
-      pipeline.py                 主业务流水线
-    services/
-      __init__.py
-      translator.py               Google、微软、腾讯、百度翻译封装和重试
-      tts_client.py               OpenAI TTS 调用和重试
-      osc_client.py               VRChat OSC 客户端
-      audio_player.py             PyAudio 音频设备扫描和播放
-    ui/
-      __init__.py
-      input_window.py             Tkinter 输入框
-      status_overlay.py           左下角悬浮状态和进度窗口
-      hotkey.py                   全局热键管理
-      tray_app.py                 系统托盘菜单
-    web/
-      __init__.py
-      server.py                   Flask Web 设置服务
-      templates/
-        settings.html             设置页面模板
-      static/
-        style.css                 设置页面样式
+    config.py                     配置模型、配置读写、默认参数
+    errors.py                     统一错误类型和最近错误记录
+    pipeline.py                   主业务流水线
+  services/
+    __init__.py
+    translator.py                 Google、微软、腾讯、百度翻译封装和重试
+    tts_client.py                 OpenAI TTS 调用和重试
+    osc_client.py                 VRChat OSC 客户端
+    audio_player.py               PyAudio 音频设备扫描和播放
+  ui/
+    __init__.py
+    input_window.py               Tkinter 输入框
+    status_overlay.py             左下角悬浮状态和进度窗口
+    hotkey.py                     全局热键管理
+    tray_app.py                   系统托盘菜单
+  web/
+    __init__.py
+    server.py                     Flask Web 设置服务
+    templates/
+      settings.html               设置页面模板
+    static/
+      style.css                   设置页面样式
 ```
 
 ## 环境要求
@@ -326,24 +324,24 @@ http://127.0.0.1:8765/
 可以用下面的命令做语法检查：
 
 ```bash
-python -m py_compile main.py vrc_tts\core\config.py vrc_tts\core\errors.py vrc_tts\core\pipeline.py vrc_tts\services\translator.py vrc_tts\services\tts_client.py vrc_tts\services\osc_client.py vrc_tts\services\audio_player.py vrc_tts\ui\input_window.py vrc_tts\ui\hotkey.py vrc_tts\ui\tray_app.py vrc_tts\web\server.py
+python -m py_compile main.py core\config.py core\errors.py core\pipeline.py services\translator.py services\tts_client.py services\osc_client.py services\audio_player.py ui\input_window.py ui\hotkey.py ui\tray_app.py web\server.py
 ```
 
 主要模块职责：
 
 - [main.py](main.py)：启动应用，连接各模块。
-- [vrc_tts/core/config.py](vrc_tts/core/config.py)：配置默认值、加载、保存和表单更新。
-- [vrc_tts/core/errors.py](vrc_tts/core/errors.py)：统一错误类型、最近错误记录和状态栏短错误文本。
-- [vrc_tts/core/pipeline.py](vrc_tts/core/pipeline.py)：单次输入文本的完整处理流水线。
-- [vrc_tts/services/translator.py](vrc_tts/services/translator.py)：Google、微软、腾讯、百度翻译封装和重试。
-- [vrc_tts/services/tts_client.py](vrc_tts/services/tts_client.py)：OpenAI TTS 封装和重试。
-- [vrc_tts/services/osc_client.py](vrc_tts/services/osc_client.py)：VRChat OSC 消息发送。
-- [vrc_tts/services/audio_player.py](vrc_tts/services/audio_player.py)：音频设备扫描和播放到虚拟麦克风。
-- [vrc_tts/ui/input_window.py](vrc_tts/ui/input_window.py)：输入框 UI。
-- [vrc_tts/ui/status_overlay.py](vrc_tts/ui/status_overlay.py)：左下角悬浮状态窗口。
-- [vrc_tts/ui/hotkey.py](vrc_tts/ui/hotkey.py)：全局热键。
-- [vrc_tts/ui/tray_app.py](vrc_tts/ui/tray_app.py)：系统托盘。
-- [vrc_tts/web/server.py](vrc_tts/web/server.py)：Flask 设置面板和测试接口。
+- [core/config.py](core/config.py)：配置默认值、加载、保存和表单更新。
+- [core/errors.py](core/errors.py)：统一错误类型、最近错误记录和状态栏短错误文本。
+- [core/pipeline.py](core/pipeline.py)：单次输入文本的完整处理流水线。
+- [services/translator.py](services/translator.py)：Google、微软、腾讯、百度翻译封装和重试。
+- [services/tts_client.py](services/tts_client.py)：OpenAI TTS 封装和重试。
+- [services/osc_client.py](services/osc_client.py)：VRChat OSC 消息发送。
+- [services/audio_player.py](services/audio_player.py)：音频设备扫描和播放到虚拟麦克风。
+- [ui/input_window.py](ui/input_window.py)：输入框 UI。
+- [ui/status_overlay.py](ui/status_overlay.py)：左下角悬浮状态窗口。
+- [ui/hotkey.py](ui/hotkey.py)：全局热键。
+- [ui/tray_app.py](ui/tray_app.py)：系统托盘。
+- [web/server.py](web/server.py)：Flask 设置面板和测试接口。
 
 ## 注意事项
 

@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from pythonosc.udp_client import SimpleUDPClient
 
-from vrc_tts.core.config import AppConfig
-from vrc_tts.core.errors import AppError
+from core.config import AppConfig
+from core.errors import AppError
 
 
 class VrcOscClient:
