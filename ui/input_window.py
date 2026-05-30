@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import tkinter as tk
+import time
 from tkinter import ttk
 from typing import Callable
 
@@ -9,7 +10,7 @@ class InputWindow:
     def __init__(
         self,
         root: tk.Tk,
-        on_submit: Callable[[str], None],
+        on_submit: Callable[[str, float], None],
         on_show: Callable[[], None] | None = None,
         on_hide: Callable[[], None] | None = None,
         on_submit_hide: Callable[[], None] | None = None,
@@ -93,6 +94,7 @@ class InputWindow:
     def _submit(self, _event=None) -> None:
         if self.entry is None:
             return
+        started_at = time.perf_counter()
         text = self.entry.get().strip()
         self.entry.delete(0, tk.END)
         if self.on_submit_hide is not None:
@@ -100,4 +102,4 @@ class InputWindow:
         else:
             self.hide()
         if text:
-            self.on_submit(text)
+            self.on_submit(text, started_at)

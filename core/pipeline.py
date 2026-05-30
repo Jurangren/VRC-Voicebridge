@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import threading
+import time
 from pathlib import Path
 from typing import Callable
 
@@ -34,14 +35,16 @@ class AppPipeline:
         self.finish_callback = finish_callback
         self._lock = threading.Lock()
 
-    def submit(self, original_text: str) -> None:
+    def submit(self, original_text: str, started_at: float | None = None) -> None:
         text = original_text.strip()
         if not text:
             return
-        thread = threading.Thread(target=self._run, args=(text,), daemon=True)
+        if started_at is None:
+            started_at = time.perf_counter()
+        thread = threading.Thread(target=self._run, args=(text, started_at), daemon=True)
         thread.start()
 
-    def _run(self, original_text: str) -> None:
+    def _run(self, original_text: str, started_at: float) -> None:
         if not self._lock.acquire(blocking=False):
             message = "上一条 TTS 任务还没有完成，请稍后再试"
             self.error_handler.report("任务忙碌", message)
@@ -54,10 +57,14 @@ class AppPipeline:
         voice_opened = False
         try:
             self._notify_progress(1, "正在翻译为日文...")
+            translation_started_at = time.perf_counter()
             translated = translate_text(original_text, config)
+            translation_seconds = time.perf_counter() - translation_started_at
 
             self._notify_progress(2, "正在调用 OpenAI TTS...")
+            tts_started_at = time.perf_counter()
             audio_path = synthesize_tts(translated, config)
+            tts_seconds = time.perf_counter() - tts_started_at
             bubble = config.bubble_format.format(original=original_text, translated=translated)
 
             self._notify_progress(3, "正在发送 VRChat 聊天气泡...")
@@ -74,7 +81,13 @@ class AppPipeline:
             self._notify_progress(6, "正在关闭 VRChat 麦克风...")
             osc.set_voice(False)
             voice_opened = False
-            self._notify_done("发送完成")
+            total_seconds = time.perf_counter() - started_at
+            self._notify_done(
+                "发送完成"
+                f"\n\n翻译耗时: {translation_seconds:.2f}秒"
+                f"\n生成耗时: {tts_seconds:.2f}秒"
+                f"\n总耗时: {total_seconds:.2f}秒"
+            )
         except Exception as exc:
             self.error_handler.report("VRC TTS 流程失败", exc)
             if voice_opened:

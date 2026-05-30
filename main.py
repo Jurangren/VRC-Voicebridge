@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import tkinter as tk
+import time
 import webbrowser
 
 from core.config import ConfigManager
@@ -49,6 +50,7 @@ class Application:
         self.mic_listener: MicrophoneListener | None = None
         self._mic_hotkey_pressed = False
         self._pending_mic_text = ""
+        self._pending_mic_started_at: float | None = None
         self._pending_mic_job: str | None = None
         self._pending_mic_countdown_seconds = 0
 
@@ -149,14 +151,16 @@ class Application:
         self._mic_hotkey_pressed = True
         if self._pending_mic_text:
             text = self._pending_mic_text
+            started_at = self._pending_mic_started_at
             self._clear_pending_microphone_text()
             self.show_typing_bubble()
             self.status_overlay.show_progress(0, self.pipeline.TOTAL_STEPS, f"确认发送：{text}")
-            self.root.after(150, lambda: self.pipeline.submit(text))
+            self.root.after(150, lambda: self.pipeline.submit(text, started_at))
             return
         if self.mic_listener is None:
             return
         if self.mic_listener.start_capture():
+            self._pending_mic_started_at = time.perf_counter()
             self.show_typing_bubble()
             self.status_overlay.show_progress(0, self.pipeline.TOTAL_STEPS, "正在按键录音，松开后识别文字...")
 
@@ -210,6 +214,7 @@ class Application:
     def _expire_pending_microphone_text(self) -> None:
         self._pending_mic_job = None
         self._pending_mic_text = ""
+        self._pending_mic_started_at = None
         self._pending_mic_countdown_seconds = 0
         self.hide_typing_bubble()
         self.status_overlay.show_warning("语音识别结果已过期，未发送", hide_after_ms=1800)
@@ -219,6 +224,7 @@ class Application:
             self.root.after_cancel(self._pending_mic_job)
             self._pending_mic_job = None
         self._pending_mic_text = ""
+        self._pending_mic_started_at = None
         self._pending_mic_countdown_seconds = 0
 
     def _consume_pending_microphone_text(self) -> str:
