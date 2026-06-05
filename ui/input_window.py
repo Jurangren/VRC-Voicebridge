@@ -44,6 +44,10 @@ class InputWindow:
         ttk.Label(frame, text="输入中文，回车后翻译成日文并发送到 VRChat：").pack(anchor="w")
         self.entry = ttk.Entry(frame, width=72)
         self.entry.pack(fill="x", pady=(8, 0))
+        self.entry.bind("<Control-a>", self._select_all)
+        self.entry.bind("<Control-A>", self._select_all)
+        self.entry.bind("<Left>", self._move_to_selection_start)
+        self.entry.bind("<Right>", self._move_to_selection_end)
         self.entry.bind("<Return>", self._submit)
         self.entry.bind("<Escape>", lambda _event: self.hide())
         self.set_text(initial_text)
@@ -76,6 +80,35 @@ class InputWindow:
         if text:
             self.entry.insert(0, text)
         self.entry.icursor(tk.END)
+
+    def _select_all(self, _event=None) -> str:
+        if self.entry is None:
+            return "break"
+        self.entry.selection_range(0, tk.END)
+        self.entry.icursor(tk.END)
+        return "break"
+
+    def _move_to_selection_start(self, _event=None) -> str | None:
+        if self.entry is None:
+            return None
+        try:
+            start = self.entry.index(tk.SEL_FIRST)
+        except tk.TclError:
+            return None
+        self.entry.selection_clear()
+        self.entry.icursor(start)
+        return "break"
+
+    def _move_to_selection_end(self, _event=None) -> str | None:
+        if self.entry is None:
+            return None
+        try:
+            end = self.entry.index(tk.SEL_LAST)
+        except tk.TclError:
+            return None
+        self.entry.selection_clear()
+        self.entry.icursor(end)
+        return "break"
 
     def hide(self, notify: bool = True) -> None:
         if self.window is not None and self.window.winfo_exists():

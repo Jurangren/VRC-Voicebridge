@@ -33,6 +33,9 @@ class StatusOverlay:
     def show_error(self, message: str = "失败，请查看错误弹窗", hide_after_ms: int = 5000) -> None:
         self.root.after(0, lambda: self._show_error(message, hide_after_ms))
 
+    def show_cancelled(self, message: str = "已取消", hide_after_ms: int = 2200) -> None:
+        self.root.after(0, lambda: self._show_cancelled(message, hide_after_ms))
+
     def hide(self) -> None:
         self.root.after(0, self._hide)
 
@@ -162,6 +165,16 @@ class StatusOverlay:
         self._ensure_window()
         self._set_text_color("#ff4d4f")
         self.progress_var.set("超时")
+        self.status_var.set(message)
+        self._place_bottom_left()
+        self._show_window()
+        self._cancel_hide()
+        self._hide_job = self.root.after(hide_after_ms, self._hide)
+
+    def _show_cancelled(self, message: str, hide_after_ms: int) -> None:
+        self._ensure_window()
+        self._set_text_color("#faad14")
+        self.progress_var.set("取消")
         self.status_var.set(message)
         self._place_bottom_left()
         self._show_window()

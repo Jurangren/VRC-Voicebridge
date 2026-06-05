@@ -53,6 +53,7 @@ class Application:
         self._pending_mic_started_at: float | None = None
         self._pending_mic_job: str | None = None
         self._pending_mic_countdown_seconds = 0
+        self._mic_press_cancelled_pipeline = False
 
     def start(self) -> None:
         config = self.config_manager.get()
@@ -149,6 +150,12 @@ class Application:
         if self._mic_hotkey_pressed:
             return
         self._mic_hotkey_pressed = True
+        if self.pipeline.cancel_before_audio():
+            self._mic_press_cancelled_pipeline = True
+            self.hide_typing_bubble()
+            self._clear_pending_microphone_text()
+            self.status_overlay.show_cancelled("已取消当前 TTS 操作", hide_after_ms=2200)
+            return
         if self._pending_mic_text:
             text = self._pending_mic_text
             started_at = self._pending_mic_started_at
@@ -166,6 +173,14 @@ class Application:
 
     def _handle_microphone_hotkey_release(self) -> None:
         self._mic_hotkey_pressed = False
+        if self._mic_press_cancelled_pipeline:
+            self._mic_press_cancelled_pipeline = False
+            return
+        if self.pipeline.cancel_before_audio():
+            self.hide_typing_bubble()
+            self._clear_pending_microphone_text()
+            self.status_overlay.show_cancelled("已取消当前 TTS 操作", hide_after_ms=2200)
+            return
         if self.mic_listener is not None:
             self.mic_listener.stop_capture()
         self.status_overlay.show_progress(0, self.pipeline.TOTAL_STEPS, "录音结束，正在识别文字...")

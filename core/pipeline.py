@@ -13,6 +13,10 @@ from services.translator import translate_text
 from services.tts_client import synthesize_tts
 
 
+class PipelineCancelled(Exception):
+    pass
+
+
 class AppPipeline:
     TOTAL_STEPS = 6
 
@@ -34,6 +38,9 @@ class AppPipeline:
         self.before_audio_callback = before_audio_callback
         self.finish_callback = finish_callback
         self._lock = threading.Lock()
+        self._state_lock = threading.Lock()
+        self._cancel_event = threading.Event()
+        self._can_cancel_before_audio = False
 
     def submit(self, original_text: str, started_at: float | None = None) -> None:
         text = original_text.strip()
@@ -43,6 +50,13 @@ class AppPipeline:
             started_at = time.perf_counter()
         thread = threading.Thread(target=self._run, args=(text, started_at), daemon=True)
         thread.start()
+
+    def cancel_before_audio(self) -> bool:
+        with self._state_lock:
+            if not self._can_cancel_before_audio:
+                return False
+            self._cancel_event.set()
+            return True
 
     def _run(self, original_text: str, started_at: float) -> None:
         if not self._lock.acquire(blocking=False):
@@ -56,38 +70,54 @@ class AppPipeline:
         audio_path: Path | None = None
         voice_opened = False
         try:
+            self._cancel_event.clear()
+            self._set_can_cancel_before_audio(False)
             self._notify_progress(1, "正在翻译为日文...")
             translation_started_at = time.perf_counter()
             translated = translate_text(original_text, config)
             translation_seconds = time.perf_counter() - translation_started_at
 
+            self._set_can_cancel_before_audio(True)
+            self._raise_if_cancelled()
             self._notify_progress(2, "正在调用 OpenAI TTS...")
             tts_started_at = time.perf_counter()
             audio_path = synthesize_tts(translated, config)
             tts_seconds = time.perf_counter() - tts_started_at
+            self._raise_if_cancelled()
             bubble = config.bubble_format.format(original=original_text, translated=translated)
 
             self._notify_progress(3, "正在发送 VRChat 聊天气泡...")
+            self._raise_if_cancelled()
             osc.send_chatbox(bubble)
 
             self._notify_progress(4, "正在开启 VRChat 麦克风...")
+            self._raise_if_cancelled()
             osc.set_voice(True)
             voice_opened = True
 
+            self._raise_if_cancelled()
+            self._set_can_cancel_before_audio(False)
             self._notify_before_audio()
+            total_seconds = time.perf_counter() - started_at
             self._notify_progress(5, "正在播放 TTS 音频...")
             play_audio_to_virtual_mic(audio_path, config)
 
             self._notify_progress(6, "正在关闭 VRChat 麦克风...")
             osc.set_voice(False)
             voice_opened = False
-            total_seconds = time.perf_counter() - started_at
             self._notify_done(
-                "发送完成"
-                f"\n\n翻译耗时: {translation_seconds:.2f}秒"
+                f"翻译耗时: {translation_seconds:.2f}秒"
                 f"\n生成耗时: {tts_seconds:.2f}秒"
                 f"\n总耗时: {total_seconds:.2f}秒"
             )
+        except PipelineCancelled:
+            self.error_handler.report("TTS 流程已取消", "已通过语音热键取消当前 TTS 操作")
+            if voice_opened:
+                try:
+                    osc.set_voice(False)
+                except Exception:
+                    pass
+            self._notify_cancelled("已取消当前 TTS 操作")
         except Exception as exc:
             self.error_handler.report("VRC TTS 流程失败", exc)
             if voice_opened:
@@ -103,7 +133,17 @@ class AppPipeline:
                 except Exception:
                     pass
             self._lock.release()
+            self._cancel_event.clear()
+            self._set_can_cancel_before_audio(False)
             self._notify_finish()
+
+    def _set_can_cancel_before_audio(self, enabled: bool) -> None:
+        with self._state_lock:
+            self._can_cancel_before_audio = enabled
+
+    def _raise_if_cancelled(self) -> None:
+        if self._cancel_event.is_set():
+            raise PipelineCancelled()
 
     def _notify_progress(self, step: int, message: str) -> None:
         if self.progress_callback is not None:
@@ -114,6 +154,10 @@ class AppPipeline:
             self.done_callback(message)
 
     def _notify_error(self, message: str) -> None:
+        if self.error_callback is not None:
+            self.error_callback(message)
+
+    def _notify_cancelled(self, message: str) -> None:
         if self.error_callback is not None:
             self.error_callback(message)
 

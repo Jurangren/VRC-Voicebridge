@@ -56,10 +56,19 @@ class AppConfig:
     virtual_audio_device_keyword: str = "CABLE Input"
     listen_mic_device_index: int = -1
     listen_mic_device_keyword: str = ""
+    speech_recognition_provider: str = "google"
     listen_energy_threshold: int = 800
     listen_phrase_time_limit: int = 8
     listen_confirm_timeout_seconds: int = 3
     listen_language: str = "zh-CN"
+    tencent_asr_secret_id: str = ""
+    tencent_asr_secret_key: str = ""
+    tencent_asr_region: str = "ap-guangzhou"
+    tencent_asr_endpoint: str = "asr.tencentcloudapi.com"
+    tencent_asr_engine_model_type: str = "16k_zh"
+    tencent_asr_filter_dirty: int = 0
+    tencent_asr_filter_modal: int = 0
+    tencent_asr_filter_punc: int = 0
     play_to_speaker: bool = True
     speaker_volume: float = 1.0
     audio_chunk_size: int = 1024
@@ -120,6 +129,9 @@ class ConfigManager:
             "listen_energy_threshold",
             "listen_phrase_time_limit",
             "listen_confirm_timeout_seconds",
+            "tencent_asr_filter_dirty",
+            "tencent_asr_filter_modal",
+            "tencent_asr_filter_punc",
         }
         float_fields = {
             "overlay_alpha",

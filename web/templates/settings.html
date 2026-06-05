@@ -31,6 +31,30 @@
         <label>监听音量阈值 <input name="listen_energy_threshold" type="number" min="1" value="{{ config.listen_energy_threshold }}"></label>
         <label>单次语音最长秒数 <input name="listen_phrase_time_limit" type="number" min="1" value="{{ config.listen_phrase_time_limit }}"></label>
         <label>二次按键确认秒数 <input name="listen_confirm_timeout_seconds" type="number" min="1" value="{{ config.listen_confirm_timeout_seconds }}"></label>
+        <label>语音识别渠道
+          <select name="speech_recognition_provider" id="speech_recognition_provider">
+            <option value="google" {% if config.speech_recognition_provider == 'google' %}selected{% endif %}>Google 语音识别</option>
+            <option value="tencent" {% if config.speech_recognition_provider == 'tencent' %}selected{% endif %}>腾讯云语音识别</option>
+          </select>
+        </label>
+
+        <div class="speech-recognition-settings" data-provider="google">
+          <h3>Google 语音识别配置</h3>
+          <p class="hint">Google 语音识别使用下方语言代码，无需 API Key。</p>
+        </div>
+
+        <div class="speech-recognition-settings" data-provider="tencent">
+          <h3>腾讯云语音识别配置</h3>
+          <label>Tencent ASR SecretId <input name="tencent_asr_secret_id" value="{{ config.tencent_asr_secret_id }}"></label>
+          <label>Tencent ASR SecretKey <input name="tencent_asr_secret_key" type="password" value="{{ config.tencent_asr_secret_key }}"></label>
+          <label>Tencent ASR Region <input name="tencent_asr_region" value="{{ config.tencent_asr_region }}"></label>
+          <label>Tencent ASR Endpoint <input name="tencent_asr_endpoint" value="{{ config.tencent_asr_endpoint }}"></label>
+          <label>引擎模型类型 <input name="tencent_asr_engine_model_type" value="{{ config.tencent_asr_engine_model_type }}"></label>
+          <label>过滤脏词 <input name="tencent_asr_filter_dirty" type="number" min="0" max="1" value="{{ config.tencent_asr_filter_dirty }}"></label>
+          <label>过滤语气词 <input name="tencent_asr_filter_modal" type="number" min="0" max="1" value="{{ config.tencent_asr_filter_modal }}"></label>
+          <label>过滤句末标点 <input name="tencent_asr_filter_punc" type="number" min="0" max="1" value="{{ config.tencent_asr_filter_punc }}"></label>
+          <p class="hint">SecretId/SecretKey 请从腾讯云访问管理 CAM 的 API 密钥页面复制；默认使用一句话识别 SentenceRecognition，音频会按 16k wav 上传。中文普通话常用引擎为 16k_zh，其他语言请按腾讯云 ASR 文档填写。</p>
+        </div>
         <label>语音识别语言 <input name="listen_language" value="{{ config.listen_language }}"></label>
         <p class="hint">按住热键期间录音，松开热键后识别为文字；在“二次按键确认秒数”内再次按下热键，才会继续翻译并生成 TTS。选择系统默认时会直接使用操作系统默认输入设备。这里不是虚拟输出麦克风，可以和输出设备完全不同。</p>
       </section>
@@ -78,7 +102,7 @@
 
         <label>源语言 <input name="source_language" value="{{ config.source_language }}"></label>
         <label>目标语言 <input name="target_language" value="{{ config.target_language }}"></label>
-        <label>气泡格式 <input name="bubble_format" value="{{ config.bubble_format }}"></label>
+        <label>气泡格式 <input name="bubble_format" value="{{ config.bubble_format.replace('\n', '\\n') }}"></label>
         <label>翻译失败重试次数 <input name="translation_retry_count" type="number" min="0" value="{{ config.translation_retry_count }}"></label>
         <label>状态悬浮窗背景透明度 <input name="overlay_alpha" type="number" min="0.1" max="1" step="0.01" value="{{ config.overlay_alpha }}"></label>
         <p class="hint">可用变量：{original}、{translated}。透明度范围 0.1 到 1，数值越小越透明。</p>
@@ -175,8 +199,17 @@
       });
     }
 
+    function updateSpeechRecognitionSettingsVisibility() {
+      const provider = document.getElementById('speech_recognition_provider').value;
+      document.querySelectorAll('.speech-recognition-settings').forEach((panel) => {
+        panel.hidden = panel.dataset.provider !== provider;
+      });
+    }
+
     document.getElementById('translation_provider').addEventListener('change', updateTranslationSettingsVisibility);
+    document.getElementById('speech_recognition_provider').addEventListener('change', updateSpeechRecognitionSettingsVisibility);
     updateTranslationSettingsVisibility();
+    updateSpeechRecognitionSettingsVisibility();
     loadInputDeviceOptions();
   </script>
 </body>
