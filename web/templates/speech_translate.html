@@ -1,0 +1,99 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <title>实时语音翻译 - VRC VoiceBridge</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+  <main>
+    <nav class="top-nav">
+      <a href="/">设置</a>
+      <a href="/speech-translate" aria-current="page">实时语音翻译</a>
+    </nav>
+
+    <h1>实时语音翻译</h1>
+    <p class="hint">本页监听指定输出设备（扬声器/耳机/虚拟输出）的系统播放声音，后端按片段识别为文字，再按选择的翻译渠道实时翻译显示。当前实现不包含本地推理；若后续接入本地 ASR/翻译模型，应强制使用 GPU 后端。</p>
+
+    <section class="preset-panel" data-preset-panel data-apply-behavior="callback">
+      <h2>预设系统</h2>
+      <p class="hint">切换预设会同步加载普通设置和实时语音翻译设置；切换前会自动保存当前预设。</p>
+      <label>切换下一个预设热键 <input data-preset-next-hotkey></label>
+      <div class="preset-list" data-preset-list></div>
+      <div class="actions">
+        <button type="button" data-save-preset-meta>保存预设名称/热键</button>
+        <button type="button" data-save-current-preset>保存当前设置到当前预设</button>
+      </div>
+      <p class="status-text" data-preset-status></p>
+    </section>
+
+    <section>
+      <h2>采集与翻译设置</h2>
+      <label>输出设备
+        <select id="outputDeviceSelect">
+          <option value="">系统默认输出设备</option>
+        </select>
+      </label>
+      <label>单次最长监听秒数 <input id="chunkSeconds" type="number" min="1" max="30" step="0.5" value="{{ config.speech_translate_chunk_seconds }}"></label>
+      <label>语音能量阈值 <input id="energyThreshold" type="number" min="0.0001" max="1" step="0.001" value="{{ config.speech_translate_energy_threshold }}"></label>
+      <label>静音结束毫秒 <input id="silenceMs" type="number" min="100" max="5000" step="100" value="{{ config.speech_translate_silence_ms }}"></label>
+      <label>桌面译文显示秒数 <input id="overlayTextSeconds" type="number" min="1" max="30" step="0.5" value="{{ config.speech_translate_overlay_text_seconds }}"></label>
+      <label>桌面译文透明度 <input id="overlayTextAlpha" type="number" min="0.1" max="1" step="0.01" value="{{ config.speech_translate_overlay_text_alpha }}"></label>
+      <label>桌面译文位置切换热键 <input id="overlayPositionHotkey" value="{{ config.speech_translate_overlay_position_hotkey }}"></label>
+      <label>语音识别渠道
+        <select id="recognitionProvider">
+          <option value="google" {% if config.speech_translate_recognition_provider == 'google' %}selected{% endif %}>Google 语音识别</option>
+          <option value="tencent" {% if config.speech_translate_recognition_provider == 'tencent' %}selected{% endif %}>腾讯云语音识别</option>
+          <option value="local_whisper_gpu" {% if config.speech_translate_recognition_provider == 'local_whisper_gpu' %}selected{% endif %}>本地 GPU Whisper large-v3-turbo</option>
+        </select>
+      </label>
+      <input id="recognitionLanguage" type="hidden" value="{{ config.speech_translate_source_language }}">
+      <label>腾讯 ASR 引擎模型 <input id="tencentAsrEngineModelType" value="{{ config.speech_translate_tencent_asr_engine_model_type }}"></label>
+      <label>本地 Whisper 模型 <input id="localWhisperModel" value="{{ config.speech_translate_local_whisper_model }}"></label>
+      <p class="hint">“源语言”会同时作为语音识别语言和翻译源语言。日语识别建议填写 ja；如果使用腾讯云 ASR，请把引擎模型设为日语模型（如 16k_ja）。本地 Whisper 会强制使用 CUDA GPU，未检测到 GPU 时会报错，不会回退 CPU。</p>
+      <label>源语言/识别语言 <input id="sourceLanguage" value="{{ config.speech_translate_source_language }}"></label>
+      <label>目标语言 <input id="targetLanguage" value="{{ config.speech_translate_target_language }}"></label>
+      <label>翻译渠道
+        <select id="translationProvider">
+          <option value="google" {% if config.speech_translate_translation_provider == 'google' %}selected{% endif %}>Google 翻译</option>
+          <option value="microsoft" {% if config.speech_translate_translation_provider == 'microsoft' %}selected{% endif %}>微软翻译</option>
+          <option value="tencent" {% if config.speech_translate_translation_provider == 'tencent' %}selected{% endif %}>腾讯翻译</option>
+          <option value="baidu" {% if config.speech_translate_translation_provider == 'baidu' %}selected{% endif %}>百度翻译</option>
+        </select>
+      </label>
+      <div class="actions">
+        <button id="refreshOutputsButton" type="button">刷新输出设备</button>
+        <button id="saveConfigButton" type="button">保存配置</button>
+        <button id="startButton" type="button">开始实时翻译</button>
+        <button id="stopButton" type="button" disabled>停止</button>
+        <button id="clearHistoryButton" type="button">清空历史</button>
+      </div>
+      <p id="status" class="status-text">待启动</p>
+    </section>
+
+    <section class="live-grid">
+      <div>
+      <h2>实时识别</h2>
+        <div id="transcript" class="live-card muted">等待输出设备音频...</div>
+      </div>
+      <div>
+        <h2>实时翻译</h2>
+        <div id="translation" class="live-card muted">等待翻译结果...</div>
+      </div>
+    </section>
+
+    <section>
+      <h2>翻译历史</h2>
+      <div id="history" class="history-list"></div>
+    </section>
+
+    <section>
+      <h2>最近错误</h2>
+      <pre>{{ last_error or '暂无错误' }}</pre>
+    </section>
+  </main>
+
+  <script src="{{ url_for('static', filename='presets.js') }}"></script>
+  <script src="{{ url_for('static', filename='speech_translate.js') }}"></script>
+</body>
+</html>

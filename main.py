@@ -4,16 +4,18 @@ import tkinter as tk
 import time
 import webbrowser
 
-from core.config import ConfigManager
+from core.config import PRESET_COUNT, ConfigManager
 from core.errors import ErrorHandler
 from core.pipeline import AppPipeline
 from services.mic_listener import MicrophoneListener
 from services.osc_client import VrcOscClient
 from ui.hotkey import HotkeyManager
 from ui.input_window import InputWindow
+from ui.speech_indicator import SpeechIndicator
 from ui.status_overlay import StatusOverlay
 from ui.tray_app import TrayApp
 from web.server import create_web_app, start_web_server
+from services.output_capture import output_capture_status
 
 
 class Application:
@@ -27,6 +29,7 @@ class Application:
         self.config_manager = ConfigManager()
         self.error_handler = ErrorHandler(self.root)
         self.status_overlay = StatusOverlay(self.root, self.config_manager)
+        self.speech_indicator = SpeechIndicator(self.root, output_capture_status)
         self.pipeline = AppPipeline(
             self.config_manager,
             self.error_handler,
@@ -45,6 +48,9 @@ class Application:
         )
         self.input_hotkey_manager = HotkeyManager(self.show_input)
         self.microphone_hotkey_manager = HotkeyManager(self.on_microphone_hotkey_press)
+        self.speech_overlay_position_hotkey_manager = HotkeyManager(self.toggle_speech_overlay_position)
+        self.preset_next_hotkey_manager = HotkeyManager(self.switch_next_preset)
+        self.preset_hotkey_managers = [HotkeyManager(lambda index=index: self.switch_preset(index)) for index in range(1, PRESET_COUNT + 1)]
         self.tray = TrayApp(self.config_manager, self.show_input, self.quit)
         self._typing_job: str | None = None
         self.mic_listener: MicrophoneListener | None = None
@@ -63,7 +69,9 @@ class Application:
             self.show_input,
             self.reload_runtime_mode,
         )
+        app.config["speech_indicator"] = self.speech_indicator
         start_web_server(app, config.web_host, config.web_port)
+        self.speech_indicator.start()
         self.tray.start()
         self.reload_runtime_mode()
         webbrowser.open(f"http://{config.web_host}:{config.web_port}/")
@@ -116,11 +124,66 @@ class Application:
         config = self.config_manager.get()
         self.input_hotkey_manager.unregister()
         self.microphone_hotkey_manager.unregister()
+        self.speech_overlay_position_hotkey_manager.unregister()
+        self.preset_next_hotkey_manager.unregister()
+        for manager in self.preset_hotkey_managers:
+            manager.unregister()
         self.stop_microphone_listener()
         self._clear_pending_microphone_text()
         self.start_microphone_listener(config)
         self.reload_hotkey()
         self.reload_microphone_hotkey()
+        self.reload_speech_overlay_position_hotkey()
+        self.reload_preset_hotkeys()
+
+    def switch_next_preset(self) -> None:
+        self.root.after(0, self._switch_next_preset)
+
+    def _switch_next_preset(self) -> None:
+        config = self.config_manager.apply_next_preset()
+        self.reload_runtime_mode()
+        self._show_preset_switched(config.active_preset_index)
+
+    def switch_preset(self, index: int) -> None:
+        self.root.after(0, lambda: self._switch_preset(index))
+
+    def _switch_preset(self, index: int) -> None:
+        config = self.config_manager.apply_preset(index)
+        self.reload_runtime_mode()
+        self._show_preset_switched(config.active_preset_index)
+
+    def _show_preset_switched(self, index: int) -> None:
+        config = self.config_manager.get()
+        name = config.preset_names[index - 1]
+        self.speech_indicator.show_toast(f"已切换到预设 {index}\n{name}")
+
+    def reload_preset_hotkeys(self) -> None:
+        for manager in self.preset_hotkey_managers:
+            manager.unregister()
+        self.preset_next_hotkey_manager.unregister()
+        try:
+            config = self.config_manager.get()
+            next_hotkey = config.preset_next_hotkey.strip()
+            if next_hotkey:
+                self.preset_next_hotkey_manager.register(next_hotkey)
+            for index, hotkey in enumerate(config.preset_hotkeys, start=1):
+                hotkey = str(hotkey).strip()
+                if hotkey:
+                    self.preset_hotkey_managers[index - 1].register(hotkey)
+        except Exception as exc:
+            self.error_handler.report("预设切换热键注册失败", exc)
+
+    def toggle_speech_overlay_position(self) -> None:
+        self.speech_indicator.toggle_text_position()
+
+    def reload_speech_overlay_position_hotkey(self) -> None:
+        try:
+            config = self.config_manager.get()
+            hotkey = config.speech_translate_overlay_position_hotkey.strip()
+            if hotkey:
+                self.speech_overlay_position_hotkey_manager.register(hotkey)
+        except Exception as exc:
+            self.error_handler.report("实时译文位置切换热键注册失败", exc)
 
     def reload_microphone_hotkey(self) -> None:
         try:
@@ -255,6 +318,10 @@ class Application:
         self._clear_pending_microphone_text()
         self.input_hotkey_manager.unregister()
         self.microphone_hotkey_manager.unregister()
+        self.speech_overlay_position_hotkey_manager.unregister()
+        self.preset_next_hotkey_manager.unregister()
+        for manager in self.preset_hotkey_managers:
+            manager.unregister()
         self.tray.stop()
         self.root.after(0, self.root.destroy)
 

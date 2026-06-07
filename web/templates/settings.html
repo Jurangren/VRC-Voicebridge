@@ -7,7 +7,22 @@
 </head>
 <body>
   <main>
+    <nav class="top-nav">
+      <a href="/" aria-current="page">设置</a>
+      <a href="/speech-translate">实时语音翻译</a>
+    </nav>
     <h1>VRC VoiceBridge 设置</h1>
+    <section class="preset-panel" data-preset-panel data-apply-behavior="reload">
+      <h2>预设系统</h2>
+      <p class="hint">5 套预设会保存本页普通设置和“实时语音翻译”页的所有设置。切换预设前会自动保存当前预设。</p>
+      <label>切换下一个预设热键 <input data-preset-next-hotkey></label>
+      <div class="preset-list" data-preset-list></div>
+      <div class="actions">
+        <button type="button" data-save-preset-meta>保存预设名称/热键</button>
+        <button type="button" data-save-current-preset>保存当前设置到当前预设</button>
+      </div>
+      <p class="status-text" data-preset-status></p>
+    </section>
     <form method="post" action="/save">
       <section>
         <h2>基础</h2>
@@ -159,6 +174,7 @@
       <pre>{{ last_error or '暂无错误' }}</pre>
     </section>
   </main>
+  <script src="{{ url_for('static', filename='presets.js') }}"></script>
   <script>
     async function postJson(url) {
       const res = await fetch(url, {method: 'POST'});

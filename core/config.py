@@ -1,13 +1,33 @@
 from __future__ import annotations
 
 import json
-from dataclasses import asdict, dataclass, fields
+from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
 from threading import RLock
 from typing import Any
 
 
 CONFIG_PATH = Path("config.json")
+PRESET_COUNT = 5
+PRESET_EXCLUDED_KEYS = {
+    "active_preset_index",
+    "preset_next_hotkey",
+    "preset_names",
+    "preset_hotkeys",
+    "preset_snapshots",
+}
+
+
+def _default_preset_names() -> list[str]:
+    return [f"预设 {index}" for index in range(1, PRESET_COUNT + 1)]
+
+
+def _default_preset_hotkeys() -> list[str]:
+    return [f"ctrl+alt+{index}" for index in range(1, PRESET_COUNT + 1)]
+
+
+def _default_preset_snapshots() -> list[dict[str, Any]]:
+    return [{} for _ in range(PRESET_COUNT)]
 
 
 @dataclass
@@ -16,6 +36,12 @@ class AppConfig:
     hotkey: str = "b"
     input_hotkey: str = "b"
     microphone_hotkey: str = "v"
+    speech_translate_overlay_position_hotkey: str = "ctrl+alt+t"
+    preset_next_hotkey: str = "ctrl+alt+0"
+    active_preset_index: int = 1
+    preset_names: list[str] = field(default_factory=_default_preset_names)
+    preset_hotkeys: list[str] = field(default_factory=_default_preset_hotkeys)
+    preset_snapshots: list[dict[str, Any]] = field(default_factory=_default_preset_snapshots)
     web_host: str = "127.0.0.1"
     web_port: int = 8765
 
@@ -61,6 +87,19 @@ class AppConfig:
     listen_phrase_time_limit: int = 8
     listen_confirm_timeout_seconds: int = 3
     listen_language: str = "zh-CN"
+    speech_translate_output_device_id: str = ""
+    speech_translate_chunk_seconds: float = 8.0
+    speech_translate_energy_threshold: float = 0.01
+    speech_translate_silence_ms: int = 900
+    speech_translate_recognition_provider: str = "google"
+    speech_translate_recognition_language: str = "ja"
+    speech_translate_source_language: str = "ja"
+    speech_translate_target_language: str = "zh-CN"
+    speech_translate_translation_provider: str = "google"
+    speech_translate_tencent_asr_engine_model_type: str = "16k_ja"
+    speech_translate_local_whisper_model: str = "large-v3-turbo"
+    speech_translate_overlay_text_seconds: float = 6.0
+    speech_translate_overlay_text_alpha: float = 0.78
     tencent_asr_secret_id: str = ""
     tencent_asr_secret_key: str = ""
     tencent_asr_region: str = "ap-guangzhou"
@@ -88,7 +127,7 @@ class ConfigManager:
                     data = json.loads(self.path.read_text(encoding="utf-8"))
                     valid_names = {field.name for field in fields(AppConfig)}
                     cleaned = {key: value for key, value in data.items() if key in valid_names}
-                    self._config = AppConfig(**cleaned)
+                    self._config = self._normalize_config(AppConfig(**cleaned))
                 except Exception:
                     backup_path = self.path.with_suffix(".invalid.json")
                     self.path.replace(backup_path)
@@ -104,59 +143,169 @@ class ConfigManager:
 
     def save(self, config: AppConfig) -> AppConfig:
         with self._lock:
-            self._config = config
-            self.path.write_text(
-                json.dumps(asdict(config), ensure_ascii=False, indent=2),
-                encoding="utf-8",
-            )
+            self._config = self._normalize_config(config)
+            self.path.write_text(json.dumps(asdict(self._config), ensure_ascii=False, indent=2), encoding="utf-8")
             return self.get()
 
     def update_from_dict(self, data: dict[str, Any]) -> AppConfig:
         current = asdict(self.get())
-        bool_fields = {
-            "osc_chat_enter",
-            "osc_chat_notify",
-            "play_to_speaker",
-        }
-        int_fields = {
-            "web_port",
-            "osc_port",
-            "translation_retry_count",
-            "tts_retry_count",
-            "tts_timeout_seconds",
-            "audio_chunk_size",
-            "listen_mic_device_index",
-            "listen_energy_threshold",
-            "listen_phrase_time_limit",
-            "listen_confirm_timeout_seconds",
-            "tencent_asr_filter_dirty",
-            "tencent_asr_filter_modal",
-            "tencent_asr_filter_punc",
-        }
-        float_fields = {
-            "overlay_alpha",
-            "speaker_volume",
-        }
-
         for key in current:
             if key not in data:
-                if key in bool_fields:
+                if key in _bool_fields():
                     current[key] = False
                 continue
-
-            value = data[key]
-            if key in bool_fields:
-                current[key] = str(value).lower() in {"1", "true", "on", "yes"}
-            elif key == "bubble_format":
-                current[key] = str(value).strip().replace("\\n", "\n")
-            elif key in int_fields:
-                current[key] = int(value)
-            elif key in float_fields:
-                if key == "speaker_volume":
-                    current[key] = min(max(float(value), 0.0), 2.0)
-                else:
-                    current[key] = min(max(float(value), 0.1), 1.0)
-            else:
-                current[key] = str(value).strip()
-
+            current[key] = _coerce_value(key, data[key])
+        self._sync_active_snapshot(current)
         return self.save(AppConfig(**current))
+
+    def patch_from_dict(self, data: dict[str, Any]) -> AppConfig:
+        current = asdict(self.get())
+        for key, value in data.items():
+            if key in current:
+                current[key] = _coerce_value(key, value)
+        self._sync_active_snapshot(current)
+        return self.save(AppConfig(**current))
+
+    def preset_summary(self) -> dict[str, Any]:
+        config = self.get()
+        return {
+            "active": config.active_preset_index,
+            "next_hotkey": config.preset_next_hotkey,
+            "presets": [
+                {
+                    "index": index + 1,
+                    "name": _safe_list_get(config.preset_names, index, f"预设 {index + 1}"),
+                    "hotkey": _safe_list_get(config.preset_hotkeys, index, f"ctrl+alt+{index + 1}"),
+                    "has_snapshot": bool(_safe_list_get(config.preset_snapshots, index, {})),
+                }
+                for index in range(PRESET_COUNT)
+            ],
+        }
+
+    def update_preset_meta(self, data: dict[str, Any]) -> AppConfig:
+        current = asdict(self.get())
+        if "preset_next_hotkey" in data:
+            current["preset_next_hotkey"] = str(data["preset_next_hotkey"]).strip()
+        names = _normalize_string_list(current.get("preset_names"), _default_preset_names())
+        hotkeys = _normalize_string_list(current.get("preset_hotkeys"), _default_preset_hotkeys())
+        for index in range(PRESET_COUNT):
+            if f"preset_{index + 1}_name" in data:
+                names[index] = str(data[f"preset_{index + 1}_name"]).strip() or f"预设 {index + 1}"
+            if f"preset_{index + 1}_hotkey" in data:
+                hotkeys[index] = str(data[f"preset_{index + 1}_hotkey"]).strip()
+        current["preset_names"] = names
+        current["preset_hotkeys"] = hotkeys
+        return self.save(AppConfig(**current))
+
+    def save_current_to_preset(self, index: int) -> AppConfig:
+        preset_index = _normalize_preset_index(index)
+        current = asdict(self.get())
+        snapshots = _normalize_snapshots(current.get("preset_snapshots"))
+        snapshots[preset_index - 1] = {key: value for key, value in current.items() if key not in PRESET_EXCLUDED_KEYS}
+        current["preset_snapshots"] = snapshots
+        current["active_preset_index"] = preset_index
+        return self.save(AppConfig(**current))
+
+    def apply_preset(self, index: int) -> AppConfig:
+        preset_index = _normalize_preset_index(index)
+        current = asdict(self.get())
+        snapshots = _normalize_snapshots(current.get("preset_snapshots"))
+        active_index = _normalize_preset_index(current.get("active_preset_index", 1))
+        snapshots[active_index - 1] = {key: value for key, value in current.items() if key not in PRESET_EXCLUDED_KEYS}
+        snapshot = snapshots[preset_index - 1]
+        if not snapshot:
+            snapshot = {key: value for key, value in current.items() if key not in PRESET_EXCLUDED_KEYS}
+            snapshots[preset_index - 1] = snapshot
+        for key, value in snapshot.items():
+            if key in current and key not in PRESET_EXCLUDED_KEYS:
+                current[key] = value
+        current["preset_snapshots"] = snapshots
+        current["active_preset_index"] = preset_index
+        return self.save(AppConfig(**current))
+
+    def apply_next_preset(self) -> AppConfig:
+        current = self.get()
+        return self.apply_preset((int(current.active_preset_index) % PRESET_COUNT) + 1)
+
+    def _sync_active_snapshot(self, current: dict[str, Any]) -> None:
+        snapshots = _normalize_snapshots(current.get("preset_snapshots"))
+        active_index = _normalize_preset_index(current.get("active_preset_index", 1))
+        snapshots[active_index - 1] = {key: value for key, value in current.items() if key not in PRESET_EXCLUDED_KEYS}
+        current["preset_snapshots"] = snapshots
+
+    def _normalize_config(self, config: AppConfig) -> AppConfig:
+        data = asdict(config)
+        data["active_preset_index"] = _normalize_preset_index(data.get("active_preset_index", 1))
+        data["preset_names"] = _normalize_string_list(data.get("preset_names"), _default_preset_names())
+        data["preset_hotkeys"] = _normalize_string_list(data.get("preset_hotkeys"), _default_preset_hotkeys())
+        data["preset_snapshots"] = _normalize_snapshots(data.get("preset_snapshots"))
+        return AppConfig(**data)
+
+
+def _bool_fields() -> set[str]:
+    return {"osc_chat_enter", "osc_chat_notify", "play_to_speaker"}
+
+
+def _int_fields() -> set[str]:
+    return {
+        "web_port", "osc_port", "translation_retry_count", "tts_retry_count", "tts_timeout_seconds",
+        "audio_chunk_size", "listen_mic_device_index", "listen_energy_threshold", "listen_phrase_time_limit",
+        "listen_confirm_timeout_seconds", "speech_translate_silence_ms", "tencent_asr_filter_dirty",
+        "tencent_asr_filter_modal", "tencent_asr_filter_punc", "active_preset_index",
+    }
+
+
+def _float_fields() -> set[str]:
+    return {
+        "overlay_alpha", "speaker_volume", "speech_translate_chunk_seconds", "speech_translate_energy_threshold",
+        "speech_translate_overlay_text_seconds", "speech_translate_overlay_text_alpha",
+    }
+
+
+def _coerce_value(key: str, value: Any) -> Any:
+    if key in _bool_fields():
+        return str(value).lower() in {"1", "true", "on", "yes"}
+    if key == "bubble_format":
+        return str(value).strip().replace("\\n", "\n")
+    if key in _int_fields():
+        return int(value)
+    if key in _float_fields():
+        number = float(value)
+        if key == "speaker_volume":
+            return min(max(number, 0.0), 2.0)
+        if key == "speech_translate_chunk_seconds":
+            return min(max(number, 1.0), 30.0)
+        if key == "speech_translate_energy_threshold":
+            return min(max(number, 0.0001), 1.0)
+        if key == "speech_translate_overlay_text_seconds":
+            return min(max(number, 1.0), 30.0)
+        return min(max(number, 0.1), 1.0)
+    if key in {"preset_names", "preset_hotkeys", "preset_snapshots"}:
+        return value
+    return str(value).strip()
+
+
+def _safe_list_get(values: list[Any], index: int, default: Any) -> Any:
+    try:
+        value = values[index]
+    except (IndexError, TypeError):
+        return default
+    return default if value is None else value
+
+
+def _normalize_preset_index(index: int) -> int:
+    return min(max(int(index), 1), PRESET_COUNT)
+
+
+def _normalize_string_list(value: Any, default: list[str]) -> list[str]:
+    values = list(value or default)[:PRESET_COUNT]
+    while len(values) < PRESET_COUNT:
+        values.append(default[len(values)])
+    return [str(item) for item in values]
+
+
+def _normalize_snapshots(value: Any) -> list[dict[str, Any]]:
+    snapshots = list(value or [])[:PRESET_COUNT]
+    while len(snapshots) < PRESET_COUNT:
+        snapshots.append({})
+    return [snapshot if isinstance(snapshot, dict) else {} for snapshot in snapshots]

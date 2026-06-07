@@ -1,15 +1,19 @@
 from __future__ import annotations
 
 import threading
+from dataclasses import replace
 from pathlib import Path
 
 from flask import Flask, jsonify, redirect, render_template, request, url_for
+import speech_recognition as sr
 
 from core.config import ConfigManager
 from core.errors import ErrorHandler
 from services.audio_player import list_input_devices, list_output_devices
 from services.osc_client import VrcOscClient
+from services.output_capture import list_output_capture_devices, output_capture_status, recognize_output_once, set_output_capture_enabled
 from services.tts_client import synthesize_tts
+from services.translator import translate_text
 
 
 def create_web_app(config_manager: ConfigManager, error_handler: ErrorHandler, show_input_callback, reload_hotkey_callback) -> Flask:
@@ -19,6 +23,7 @@ def create_web_app(config_manager: ConfigManager, error_handler: ErrorHandler, s
         template_folder=str(web_dir / "templates"),
         static_folder=str(web_dir / "static"),
     )
+    app.config["speech_indicator"] = None
 
     @app.get("/")
     def index():
@@ -28,11 +33,61 @@ def create_web_app(config_manager: ConfigManager, error_handler: ErrorHandler, s
             last_error=error_handler.last_error(),
         )
 
+    @app.get("/speech-translate")
+    def speech_translate():
+        return render_template(
+            "speech_translate.html",
+            config=config_manager.get(),
+            last_error=error_handler.last_error(),
+        )
+
     @app.post("/save")
     def save():
         config_manager.update_from_dict(request.form.to_dict())
         reload_hotkey_callback()
         return redirect(url_for("index"))
+
+    @app.get("/api/presets")
+    def presets():
+        return jsonify(config_manager.preset_summary())
+
+    @app.post("/api/presets/meta")
+    def save_preset_meta():
+        try:
+            payload = request.get_json(silent=True) or {}
+            config_manager.update_preset_meta(payload)
+            reload_hotkey_callback()
+            return jsonify({"ok": True, "summary": config_manager.preset_summary()})
+        except Exception as exc:
+            error_handler.report("保存预设信息失败", exc)
+            return jsonify({"ok": False, "error": str(exc)}), 500
+
+    @app.post("/api/presets/<int:index>/save")
+    def save_preset(index: int):
+        try:
+            config_manager.save_current_to_preset(index)
+            return jsonify({"ok": True, "summary": config_manager.preset_summary()})
+        except Exception as exc:
+            error_handler.report("保存当前设置到预设失败", exc)
+            return jsonify({"ok": False, "error": str(exc)}), 500
+
+    @app.post("/api/presets/<int:index>/apply")
+    def apply_preset(index: int):
+        try:
+            config = config_manager.apply_preset(index)
+            reload_hotkey_callback()
+            preset_name = config.preset_names[config.active_preset_index - 1]
+            return jsonify(
+                {
+                    "ok": True,
+                    "active": config.active_preset_index,
+                    "name": preset_name,
+                    "summary": config_manager.preset_summary(),
+                }
+            )
+        except Exception as exc:
+            error_handler.report("切换预设失败", exc)
+            return jsonify({"ok": False, "error": str(exc)}), 500
 
     @app.post("/open-input")
     def open_input():
@@ -56,6 +111,179 @@ def create_web_app(config_manager: ConfigManager, error_handler: ErrorHandler, s
             return jsonify({"ok": True})
         except Exception as exc:
             error_handler.report("TTS 测试失败", exc)
+            return jsonify({"ok": False, "error": str(exc)}), 500
+
+    @app.post("/api/translate")
+    def api_translate():
+        try:
+            payload = request.get_json(silent=True) or {}
+            text = str(payload.get("text", "")).strip()
+            if not text:
+                return jsonify({"ok": False, "error": "待翻译文本不能为空"}), 400
+
+            provider = str(payload.get("provider", "")).strip() or config_manager.get().translation_provider
+            source_language = str(payload.get("source_language", "")).strip() or config_manager.get().source_language
+            target_language = str(payload.get("target_language", "")).strip() or config_manager.get().target_language
+            allowed_providers = {"google", "microsoft", "tencent", "baidu"}
+            if provider not in allowed_providers:
+                return jsonify({"ok": False, "error": f"不支持的翻译渠道：{provider}"}), 400
+
+            runtime_config = replace(
+                config_manager.get(),
+                translation_provider=provider,
+                source_language=source_language,
+                target_language=target_language,
+            )
+            translated = translate_text(text, runtime_config)
+            return jsonify(
+                {
+                    "ok": True,
+                    "original": text,
+                    "translated": translated,
+                    "provider": provider,
+                    "source_language": source_language,
+                    "target_language": target_language,
+                }
+            )
+        except Exception as exc:
+            error_handler.report("实时语音翻译失败", exc)
+            return jsonify({"ok": False, "error": str(exc)}), 500
+
+    @app.get("/api/output-capture/devices")
+    def output_capture_devices():
+        try:
+            return jsonify(list_output_capture_devices())
+        except Exception as exc:
+            error_handler.report("扫描输出监听设备失败", exc)
+            return jsonify({"ok": False, "error": str(exc)}), 500
+
+    @app.get("/api/output-capture/status")
+    def output_capture_status_api():
+        return jsonify(output_capture_status())
+
+    @app.post("/api/output-capture/enabled")
+    def output_capture_enabled_api():
+        payload = request.get_json(silent=True) or {}
+        set_output_capture_enabled(bool(payload.get("enabled")))
+        return jsonify({"ok": True})
+
+    @app.post("/api/output-capture/translate-once")
+    def output_capture_translate_once():
+        try:
+            payload = request.get_json(silent=True) or {}
+            config = config_manager.get()
+            provider = str(payload.get("provider", "")).strip() or config.speech_translate_translation_provider
+            source_language = str(payload.get("source_language", "")).strip() or config.speech_translate_source_language
+            target_language = str(payload.get("target_language", "")).strip() or config.speech_translate_target_language
+            recognition_language = source_language
+            allowed_providers = {"google", "microsoft", "tencent", "baidu"}
+            if provider not in allowed_providers:
+                return jsonify({"ok": False, "error": f"不支持的翻译渠道：{provider}"}), 400
+
+            runtime_config = replace(
+                config,
+                translation_provider=provider,
+                source_language=source_language,
+                target_language=target_language,
+                speech_recognition_provider=str(payload.get("recognition_provider", "")).strip()
+                or config.speech_translate_recognition_provider,
+                listen_language=recognition_language,
+                tencent_asr_engine_model_type=str(payload.get("tencent_asr_engine_model_type", "")).strip()
+                or config.speech_translate_tencent_asr_engine_model_type,
+                speech_translate_local_whisper_model=str(payload.get("local_whisper_model", "")).strip()
+                or config.speech_translate_local_whisper_model,
+                speech_translate_chunk_seconds=float(payload.get("chunk_seconds", config.speech_translate_chunk_seconds)),
+                speech_translate_energy_threshold=float(payload.get("energy_threshold", config.speech_translate_energy_threshold)),
+                speech_translate_silence_ms=int(payload.get("silence_ms", config.speech_translate_silence_ms)),
+            )
+            runtime_config.speech_recognition_provider = str(payload.get("recognition_provider", "")).strip() or config.speech_translate_recognition_provider
+            if runtime_config.speech_recognition_provider not in {"google", "tencent", "local_whisper_gpu"}:
+                return jsonify({"ok": False, "error": f"不支持的语音识别渠道：{runtime_config.speech_recognition_provider}"}), 400
+            if not output_capture_status().get("enabled"):
+                return jsonify({"ok": False, "silent": True, "error": "实时翻译已停止"}), 200
+            original = recognize_output_once(
+                str(payload.get("device_id", "")).strip(),
+                float(payload.get("chunk_seconds", 4)),
+                runtime_config,
+            )
+            if not original:
+                return jsonify({"ok": False, "silent": True, "error": "未识别到输出设备音频"}), 200
+            if not output_capture_status().get("enabled"):
+                return jsonify({"ok": False, "silent": True, "error": "实时翻译已停止"}), 200
+            translated = translate_text(original, runtime_config)
+            indicator = app.config.get("speech_indicator")
+            if indicator is not None:
+                indicator.show_text(
+                    translated,
+                    float(config.speech_translate_overlay_text_seconds),
+                    float(config.speech_translate_overlay_text_alpha),
+                )
+            return jsonify(
+                {
+                    "ok": True,
+                    "original": original,
+                    "translated": translated,
+                    "provider": provider,
+                    "source_language": source_language,
+                    "target_language": target_language,
+                }
+            )
+        except sr.UnknownValueError:
+            return jsonify({"ok": False, "silent": True, "error": "未识别到输出设备音频"}), 200
+        except Exception as exc:
+            error_handler.report("输出设备实时翻译失败", exc)
+            return jsonify({"ok": False, "error": str(exc)}), 500
+
+    @app.get("/api/speech-translate/config")
+    def speech_translate_config():
+        config = config_manager.get()
+        return jsonify(
+            {
+                "output_device_id": config.speech_translate_output_device_id,
+                "chunk_seconds": config.speech_translate_chunk_seconds,
+                "energy_threshold": config.speech_translate_energy_threshold,
+                "silence_ms": config.speech_translate_silence_ms,
+                "overlay_text_seconds": config.speech_translate_overlay_text_seconds,
+                "overlay_text_alpha": config.speech_translate_overlay_text_alpha,
+                "overlay_position_hotkey": config.speech_translate_overlay_position_hotkey,
+                "recognition_provider": config.speech_translate_recognition_provider,
+                "recognition_language": config.speech_translate_source_language,
+                "tencent_asr_engine_model_type": config.speech_translate_tencent_asr_engine_model_type,
+                "local_whisper_model": config.speech_translate_local_whisper_model,
+                "source_language": config.speech_translate_source_language,
+                "target_language": config.speech_translate_target_language,
+                "provider": config.speech_translate_translation_provider,
+            }
+        )
+
+    @app.post("/api/speech-translate/config")
+    def save_speech_translate_config():
+        try:
+            payload = request.get_json(silent=True) or {}
+            config_manager.patch_from_dict(
+                {
+                    "speech_translate_output_device_id": str(payload.get("output_device_id", "")).strip(),
+                    "speech_translate_chunk_seconds": payload.get("chunk_seconds", 8),
+                    "speech_translate_energy_threshold": payload.get("energy_threshold", 0.01),
+                    "speech_translate_silence_ms": payload.get("silence_ms", 900),
+                    "speech_translate_overlay_text_seconds": payload.get("overlay_text_seconds", 6),
+                    "speech_translate_overlay_text_alpha": payload.get("overlay_text_alpha", 0.78),
+                    "speech_translate_overlay_position_hotkey": str(payload.get("overlay_position_hotkey", "")).strip(),
+                    "speech_translate_recognition_provider": str(payload.get("recognition_provider", "")).strip(),
+                    "speech_translate_recognition_language": str(payload.get("source_language", "")).strip(),
+                    "speech_translate_tencent_asr_engine_model_type": str(
+                        payload.get("tencent_asr_engine_model_type", "")
+                    ).strip(),
+                    "speech_translate_local_whisper_model": str(payload.get("local_whisper_model", "")).strip(),
+                    "speech_translate_source_language": str(payload.get("source_language", "")).strip(),
+                    "speech_translate_target_language": str(payload.get("target_language", "")).strip(),
+                    "speech_translate_translation_provider": str(payload.get("provider", "")).strip(),
+                }
+            )
+            reload_hotkey_callback()
+            return jsonify({"ok": True})
+        except Exception as exc:
+            error_handler.report("保存实时语音翻译配置失败", exc)
             return jsonify({"ok": False, "error": str(exc)}), 500
 
     @app.get("/devices")

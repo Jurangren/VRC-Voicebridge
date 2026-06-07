@@ -7,3 +7,7 @@ openai>=1.0.0
 deep-translator>=1.11.4
 PyAudio>=0.2.14
 SpeechRecognition>=3.10.0
+soundcard>=0.4.3
+numpy>=1.24.0
+faster-whisper>=1.1.0
+python-certifi-win32>=1.6.1; platform_system == "Windows"

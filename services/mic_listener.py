@@ -97,6 +97,10 @@ class MicrophoneListener:
 
 
 def recognize_speech(audio: sr.AudioData, recognizer: sr.Recognizer, config: AppConfig) -> str:
+    if config.speech_recognition_provider == "local_whisper_gpu":
+        from services.local_whisper import recognize_with_local_whisper_gpu
+
+        return recognize_with_local_whisper_gpu(audio, config)
     if config.speech_recognition_provider == "tencent":
         return _recognize_with_tencent(audio, config)
     return recognizer.recognize_google(audio, language=config.listen_language)
