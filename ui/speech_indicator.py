@@ -3,6 +3,18 @@ from __future__ import annotations
 import ctypes
 import time
 import tkinter as tk
+import tkinter.font as tkfont
+
+BUBBLE_BG = "#131826"
+BUBBLE_BORDER = "#4f8cff"
+BUBBLE_TEXT = "#e8edf6"
+TRANSPARENT = "#07111d"
+
+# 双说话指示器：左蓝=实时翻译听到的声音，右绿=自己麦克风 VAD 录音
+INDICATOR_CHANNELS = {
+    "translate": {"color": "#4f8cff", "body_light": "#9cc1ff", "accent": "#aac6ff", "slot": -1},
+    "mic": {"color": "#34d399", "body_light": "#8ef0c8", "accent": "#a7f3d0", "slot": 1},
+}
 
 
 class SpeechIndicator:
@@ -14,26 +26,16 @@ class SpeechIndicator:
     def __init__(self, root: tk.Tk, status_provider):
         self.root = root
         self.status_provider = status_provider
-        self.window: tk.Toplevel | None = None
-        self.canvas: tk.Canvas | None = None
-        self.text_window: tk.Toplevel | None = None
-        self.text_frame: tk.Frame | None = None
+        self._channels: dict[str, dict] = {
+            name: {"window": None, "canvas": None, "visible": False} for name in INDICATOR_CHANNELS
+        }
         self.toast_window: tk.Toplevel | None = None
         self.toast_canvas: tk.Canvas | None = None
         self._toast_job: str | None = None
         self._poll_job: str | None = None
         self._pulse_job: str | None = None
         self._pulse = 0
-        self._visible = False
         self._items: list[dict] = []
-        self.text_position = "top"
-
-    def toggle_text_position(self) -> None:
-        self.root.after(0, self._toggle_text_position)
-
-    def _toggle_text_position(self) -> None:
-        self.text_position = "bottom" if self.text_position == "top" else "top"
-        self._place_text_window()
 
     def start(self) -> None:
         if self._poll_job is None:
@@ -43,24 +45,40 @@ class SpeechIndicator:
         if self._poll_job is not None:
             self.root.after_cancel(self._poll_job)
             self._poll_job = None
-        self.hide()
+        for name in self._channels:
+            self._hide_channel(name)
 
     def _poll(self) -> None:
         try:
             status = self.status_provider()
-            speaking = bool(status.get("enabled")) and bool(status.get("speaking"))
+            translate_speaking = bool(status.get("translate_speaking"))
+            mic_speaking = bool(status.get("mic_speaking"))
+            # 兼容旧的 {"enabled", "speaking"} 状态格式
+            if "translate_speaking" not in status:
+                translate_speaking = bool(status.get("enabled")) and bool(status.get("speaking"))
         except Exception:
-            speaking = False
+            translate_speaking = mic_speaking = False
 
-        if speaking:
-            self.show()
-        else:
-            self.hide()
+        self._set_channel_visible("translate", translate_speaking)
+        self._set_channel_visible("mic", mic_speaking)
         self._refresh_text_items()
         self._poll_job = self.root.after(self.POLL_MS, self._poll)
 
-    def show_text(self, text: str, seconds: float, alpha: float = 0.78) -> None:
-        self.root.after(0, lambda: self._show_text(text, seconds, alpha))
+    def _set_channel_visible(self, name: str, visible: bool) -> None:
+        if visible:
+            self._show_channel(name)
+        else:
+            self._hide_channel(name)
+
+    def show_text(
+        self,
+        text: str,
+        seconds: float,
+        alpha: float = 0.78,
+        speaker_label: str = "",
+        speaker_color: str = "",
+    ) -> None:
+        self.root.after(0, lambda: self._show_text(text, seconds, alpha, speaker_label, speaker_color))
 
     def show_toast(self, text: str, seconds: float = 2.2) -> None:
         self.root.after(0, lambda: self._show_toast(text, seconds))
@@ -77,8 +95,9 @@ class SpeechIndicator:
         if self.toast_canvas is not None:
             self.toast_canvas.configure(width=width, height=height)
             self.toast_canvas.delete("all")
-            self._draw_round_rect(self.toast_canvas, 1, 1, width - 2, height - 2, 16, fill="#111827", outline="#60a5fa")
-            self.toast_canvas.create_text(18, 14, text=text, anchor="nw", fill="#e9f6ff", font=("Microsoft YaHei UI", 13, "bold"), width=width - 36)
+            self._draw_round_rect(self.toast_canvas, 1, 1, width - 2, height - 2, 16, fill=BUBBLE_BG, outline=BUBBLE_BORDER)
+            self.toast_canvas.create_rectangle(1, 18, 4, height - 18, fill=BUBBLE_BORDER, outline="")
+            self.toast_canvas.create_text(18, 14, text=text, anchor="nw", fill=BUBBLE_TEXT, font=("Microsoft YaHei UI", 13, "bold"), width=width - 36)
         self._place_toast_window(width, height)
         if self.toast_window is not None:
             self.toast_window.deiconify()
@@ -114,121 +133,130 @@ class SpeechIndicator:
         if self.toast_window is not None and self.toast_window.winfo_exists():
             self.toast_window.withdraw()
 
-    def _show_text(self, text: str, seconds: float, alpha: float) -> None:
+    def _show_text(self, text: str, seconds: float, alpha: float, speaker_label: str = "", speaker_color: str = "") -> None:
         text = text.strip()
         if not text:
             return
-        self._ensure_text_window()
-        expire_at = time.monotonic() + max(1.0, float(seconds))
-        bubble = tk.Canvas(
-            self.text_frame,
-            bg=self.TRANSPARENT_COLOR,
-            highlightthickness=0,
-            bd=0,
-        )
+        # 每条气泡一个独立窗口，淡出时直接降低窗口透明度，让整个气泡一起渐隐
+        window = tk.Toplevel(self.root)
+        window.title("Speech Translation Text")
+        window.overrideredirect(True)
+        window.attributes("-topmost", True)
+        window.configure(bg=self.TRANSPARENT_COLOR)
+        window.withdraw()
+        try:
+            window.wm_attributes("-transparentcolor", self.TRANSPARENT_COLOR)
+        except tk.TclError:
+            pass
+        bubble = tk.Canvas(window, bg=self.TRANSPARENT_COLOR, highlightthickness=0, bd=0)
+        bubble.pack(fill="both", expand=True)
+        chip_width = self._chip_width(bubble, speaker_label)
+        text_x = 14 + (chip_width + 10 if chip_width else 0)
         text_id = bubble.create_text(
-            14,
+            text_x,
             10,
             text=text,
             anchor="nw",
-            fill="#e9f6ff",
+            fill=BUBBLE_TEXT,
             font=("Microsoft YaHei UI", 12, "bold"),
-            width=620,
+            width=620 - chip_width,
         )
         bbox = bubble.bbox(text_id) or (0, 0, 360, 32)
         width = min(max(bbox[2] + 28, 360), 680)
         height = max(bbox[3] + 20, 44)
         bubble.configure(width=width, height=height)
-        self._draw_text_bubble(bubble, text, width, height, 1.0)
-        bubble.pack(anchor="w", pady=(0, 8))
-        item_alpha = min(max(float(alpha), 0.1), 1.0)
-        self._items.append(
-            {
-                "label": bubble,
-                "expire_at": expire_at,
-                "alpha": item_alpha,
-                "text": text,
-                "width": width,
-                "height": height,
-            }
-        )
-        if self.text_window is not None:
-            self.text_window.attributes("-alpha", item_alpha)
-        self._place_text_window()
-        if self.text_window is not None:
-            self.text_window.deiconify()
-            self.text_window.lift()
-
-    def _ensure_text_window(self) -> None:
-        if self.text_window is not None and self.text_window.winfo_exists():
-            return
-        self.text_window = tk.Toplevel(self.root)
-        self.text_window.title("Speech Translation Text")
-        self.text_window.overrideredirect(True)
-        self.text_window.attributes("-topmost", True)
-        self.text_window.attributes("-alpha", 0.94)
-        self.text_window.configure(bg=self.TRANSPARENT_COLOR)
-        try:
-            self.text_window.wm_attributes("-transparentcolor", self.TRANSPARENT_COLOR)
-        except tk.TclError:
-            pass
-        self.text_frame = tk.Frame(self.text_window, bg=self.TRANSPARENT_COLOR)
-        self.text_frame.pack(fill="both", expand=True)
-        self.text_window.withdraw()
+        item = {
+            "window": window,
+            "label": bubble,
+            "expire_at": time.monotonic() + max(1.0, float(seconds)),
+            "alpha": min(max(float(alpha), 0.1), 1.0),
+            "text": text,
+            "width": width,
+            "height": height,
+            "speaker_label": speaker_label,
+            "speaker_color": speaker_color or BUBBLE_BORDER,
+            "chip_width": chip_width,
+        }
+        self._draw_text_bubble(item)
+        window.attributes("-alpha", item["alpha"])
+        self._items.append(item)
+        self._place_bubbles()
+        window.deiconify()
+        window.lift()
 
     def _refresh_text_items(self) -> None:
         if not self._items:
-            if self.text_window is not None and self.text_window.winfo_exists():
-                self.text_window.withdraw()
             return
         now = time.monotonic()
         kept: list[dict] = []
         for item in self._items:
-            label: tk.Canvas = item["label"]
+            window: tk.Toplevel = item["window"]
             remaining = item["expire_at"] - now
             if remaining <= 0:
-                label.destroy()
+                window.destroy()
                 continue
             if remaining < 0.8:
                 fade = max(0.0, remaining / 0.8)
-                self._draw_text_bubble(label, item["text"], item["width"], item["height"], fade)
+                try:
+                    window.attributes("-alpha", item["alpha"] * fade)
+                except tk.TclError:
+                    pass
             kept.append(item)
         self._items = kept
-        self._place_text_window()
-        if not self._items and self.text_window is not None and self.text_window.winfo_exists():
-            self.text_window.withdraw()
+        self._place_bubbles()
 
-    def _place_text_window(self) -> None:
-        if self.text_window is None:
+    def _place_bubbles(self) -> None:
+        """气泡固定显示在屏幕下方居中区域，新气泡在下、整体向上生长。"""
+        if not self._items:
             return
         x, y = self.root.winfo_pointerxy()
-        left, top, right, bottom = _monitor_rect_for_point(x, y)
-        self.text_window.update_idletasks()
-        width = min(max(self.text_window.winfo_reqwidth(), 360), 680)
-        height = self.text_window.winfo_reqheight()
-        if self.text_position == "bottom":
-            x_pos = left + max((right - left - width) // 2, 0)
-            y_pos = bottom - height - self.MARGIN - 296
-        else:
-            x_pos = left + self.MARGIN + self.SIZE + 12
-            y_pos = top + self.MARGIN + 4
-        self.text_window.geometry(f"{width}x{height}+{x_pos}+{y_pos}")
+        left, _top, right, bottom = _monitor_rect_for_point(x, y)
+        gap = 8
+        total_height = sum(item["height"] for item in self._items) + gap * (len(self._items) - 1)
+        y_pos = bottom - self.MARGIN - 296 - total_height
+        for item in self._items:
+            x_pos = left + max((right - left - item["width"]) // 2, 0)
+            try:
+                item["window"].geometry(f"{item['width']}x{item['height']}+{x_pos}+{y_pos}")
+            except tk.TclError:
+                pass
+            y_pos += item["height"] + gap
 
-    def _draw_text_bubble(self, canvas: tk.Canvas, text: str, width: int, height: int, fade: float) -> None:
-        fade = min(max(float(fade), 0.0), 1.0)
+    @staticmethod
+    def _chip_width(canvas: tk.Canvas, speaker_label: str) -> int:
+        if not speaker_label:
+            return 0
+        font = tkfont.Font(family="Microsoft YaHei UI", size=10, weight="bold")
+        return font.measure(speaker_label) + 16
+
+    def _draw_text_bubble(self, item: dict) -> None:
+        canvas: tk.Canvas = item["label"]
+        width, height = item["width"], item["height"]
+        speaker_label = item.get("speaker_label", "")
+        speaker_color = item.get("speaker_color", BUBBLE_BORDER)
+        chip_width = item.get("chip_width", 0)
         canvas.delete("all")
-        fill = _blend_color("#07111d", "#111827", fade)
-        outline = _blend_color("#07111d", "#60a5fa", fade)
-        text_color = _blend_color("#07111d", "#e9f6ff", fade)
-        self._draw_round_rect(canvas, 1, 1, width - 2, height - 2, 14, fill=fill, outline=outline)
+        self._draw_round_rect(canvas, 1, 1, width - 2, height - 2, 14, fill=BUBBLE_BG, outline=speaker_color)
+        text_x = 14
+        if speaker_label and chip_width:
+            chip_fill = _blend_color(BUBBLE_BG, speaker_color, 0.22)
+            self._draw_round_rect(canvas, 12, 9, 12 + chip_width, 31, 10, fill=chip_fill, outline=speaker_color)
+            canvas.create_text(
+                12 + chip_width / 2,
+                20,
+                text=speaker_label,
+                fill=speaker_color,
+                font=("Microsoft YaHei UI", 10, "bold"),
+            )
+            text_x = 14 + chip_width + 10
         canvas.create_text(
-            14,
+            text_x,
             10,
-            text=text,
+            text=item["text"],
             anchor="nw",
-            fill=text_color,
+            fill=BUBBLE_TEXT,
             font=("Microsoft YaHei UI", 12, "bold"),
-            width=width - 28,
+            width=620 - chip_width,
         )
 
     def _draw_round_rect(self, canvas: tk.Canvas, x1: int, y1: int, x2: int, y2: int, radius: int, **kwargs) -> None:
@@ -248,84 +276,105 @@ class SpeechIndicator:
         ]
         canvas.create_polygon(points, smooth=True, splinesteps=18, **kwargs)
 
-    def show(self) -> None:
-        if not self._visible:
-            self._ensure_window()
-            self._visible = True
-            if self.window is not None:
-                self.window.deiconify()
-                self.window.lift()
-            self._pulse = 0
-            self._animate()
-        self._place_at_current_monitor_top_left()
+    def _show_channel(self, name: str) -> None:
+        channel = self._channels[name]
+        if not channel["visible"]:
+            self._ensure_channel_window(name)
+            channel["visible"] = True
+            channel["window"].deiconify()
+            channel["window"].lift()
+            if self._pulse_job is None:
+                self._pulse = 0
+                self._animate()
+        self._place_channels()
 
-    def hide(self) -> None:
-        self._visible = False
-        if self._pulse_job is not None:
+    def _hide_channel(self, name: str) -> None:
+        channel = self._channels[name]
+        channel["visible"] = False
+        window = channel["window"]
+        if window is not None and window.winfo_exists():
+            window.withdraw()
+        if not any(item["visible"] for item in self._channels.values()) and self._pulse_job is not None:
             self.root.after_cancel(self._pulse_job)
             self._pulse_job = None
-        if self.window is not None and self.window.winfo_exists():
-            self.window.withdraw()
 
-    def _ensure_window(self) -> None:
-        if self.window is not None and self.window.winfo_exists():
+    def _ensure_channel_window(self, name: str) -> None:
+        channel = self._channels[name]
+        if channel["window"] is not None and channel["window"].winfo_exists():
             return
-        self.window = tk.Toplevel(self.root)
-        self.window.title("Speech Indicator")
-        self.window.overrideredirect(True)
-        self.window.attributes("-topmost", True)
-        self.window.attributes("-alpha", 0.92)
-        self.window.configure(bg="#07111d")
+        window = tk.Toplevel(self.root)
+        window.title(f"Speech Indicator ({name})")
+        window.overrideredirect(True)
+        window.attributes("-topmost", True)
+        window.attributes("-alpha", 0.92)
+        window.configure(bg="#07111d")
         try:
-            self.window.wm_attributes("-transparentcolor", "#07111d")
+            window.wm_attributes("-transparentcolor", "#07111d")
         except tk.TclError:
             pass
-        self.canvas = tk.Canvas(
-            self.window,
-            width=self.SIZE,
-            height=self.SIZE,
-            highlightthickness=0,
-            bg="#07111d",
-            bd=0,
-        )
-        self.canvas.pack(fill="both", expand=True)
-        self.window.withdraw()
+        canvas = tk.Canvas(window, width=self.SIZE, height=self.SIZE, highlightthickness=0, bg="#07111d", bd=0)
+        canvas.pack(fill="both", expand=True)
+        window.withdraw()
+        channel["window"] = window
+        channel["canvas"] = canvas
 
     def _animate(self) -> None:
-        if not self._visible or self.canvas is None:
+        visible_any = False
+        phase = (self._pulse % 16) / 16.0
+        wave = abs(phase * 2 - 1)  # 0 -> 1 -> 0 的呼吸曲线
+        for name, channel in self._channels.items():
+            if not channel["visible"] or channel["canvas"] is None:
+                continue
+            visible_any = True
+            self._draw_mic(channel["canvas"], INDICATOR_CHANNELS[name], wave)
+        if not visible_any:
+            self._pulse_job = None
             return
-        self.canvas.delete("all")
-        phase = self._pulse % 12
-        glow = 4 + abs(6 - phase)
-        center = self.SIZE // 2
-        radius = 22
-        self.canvas.create_oval(
-            center - radius - glow,
-            center - radius - glow,
-            center + radius + glow,
-            center + radius + glow,
-            outline="#3577f0",
-            width=4,
-        )
-        self.canvas.create_oval(
-            center - radius,
-            center - radius,
-            center + radius,
-            center + radius,
-            fill="#102033",
-            outline="#8ed4ff",
-            width=2,
-        )
-        self.canvas.create_text(center, center + 1, text="🎙", fill="#e9f6ff", font=("Segoe UI Emoji", 24))
         self._pulse += 1
         self._pulse_job = self.root.after(80, self._animate)
 
-    def _place_at_current_monitor_top_left(self) -> None:
-        if self.window is None:
-            return
+    def _draw_mic(self, canvas: tk.Canvas, palette: dict, wave: float) -> None:
+        canvas.delete("all")
+        center = self.SIZE // 2
+        color = palette["color"]
+
+        # 呼吸光环
+        glow_radius = 24 + int(4 * wave)
+        glow_color = _blend_color("#1a2438", color, 0.35 + 0.4 * wave)
+        canvas.create_oval(
+            center - glow_radius, center - glow_radius, center + glow_radius, center + glow_radius,
+            outline=glow_color, width=2,
+        )
+        # 深色圆底
+        canvas.create_oval(center - 22, center - 22, center + 22, center + 22, fill=BUBBLE_BG, outline=color, width=2)
+
+        # 自绘麦克风：胶囊话筒 + U 形支架 + 立柱 + 底座
+        body_color = _blend_color(color, palette["body_light"], 0.35 + 0.4 * wave)
+        accent = palette["accent"]
+        canvas.create_oval(center - 6, center - 15, center + 6, center - 3, fill=body_color, outline="")
+        canvas.create_rectangle(center - 6, center - 9, center + 6, center + 1, fill=body_color, outline="")
+        canvas.create_oval(center - 6, center - 5, center + 6, center + 7, fill=body_color, outline="")
+        canvas.create_arc(
+            center - 10, center - 6, center + 10, center + 12,
+            start=180, extent=180, style="arc", outline=accent, width=2,
+        )
+        canvas.create_line(center, center + 12, center, center + 16, fill=accent, width=2)
+        canvas.create_line(center - 6, center + 17, center + 6, center + 17, fill=accent, width=2, capstyle="round")
+
+    def _place_channels(self) -> None:
+        """双指示器固定在屏幕正下方居中：蓝色（实时翻译）在左、绿色（自己录音）在右。"""
         x, y = self.root.winfo_pointerxy()
-        left, top = _monitor_top_left_for_point(x, y)
-        self.window.geometry(f"{self.SIZE}x{self.SIZE}+{left + self.MARGIN}+{top + self.MARGIN}")
+        left, _top, right, bottom = _monitor_rect_for_point(x, y)
+        x_center = left + (right - left) // 2
+        y_pos = bottom - self.SIZE - 150
+        gap = 6
+        for name, channel in self._channels.items():
+            window = channel["window"]
+            if window is None or not window.winfo_exists():
+                continue
+            slot = INDICATOR_CHANNELS[name]["slot"]
+            x_pos = x_center - self.SIZE - gap if slot < 0 else x_center + gap
+            window.geometry(f"{self.SIZE}x{self.SIZE}+{x_pos}+{y_pos}")
 
 
 def _blend_color(start: str, end: str, ratio: float) -> str:
@@ -338,11 +387,6 @@ def _blend_color(start: str, end: str, ratio: float) -> str:
         b = int(end[index:index + 2], 16)
         values.append(int(a + (b - a) * ratio))
     return f"#{values[0]:02x}{values[1]:02x}{values[2]:02x}"
-
-
-def _monitor_top_left_for_point(x: int, y: int) -> tuple[int, int]:
-    left, top, _right, _bottom = _monitor_rect_for_point(x, y)
-    return left, top
 
 
 def _monitor_rect_for_point(x: int, y: int) -> tuple[int, int, int, int]:

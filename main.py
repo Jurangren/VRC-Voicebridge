@@ -15,7 +15,9 @@ from ui.speech_indicator import SpeechIndicator
 from ui.status_overlay import StatusOverlay
 from ui.tray_app import TrayApp
 from web.server import create_web_app, start_web_server
+from services.mic_vad_listener import VadMicListener
 from services.output_capture import output_capture_status
+from services.realtime_pipeline import PIPELINE
 
 
 class Application:
@@ -29,7 +31,7 @@ class Application:
         self.config_manager = ConfigManager()
         self.error_handler = ErrorHandler(self.root)
         self.status_overlay = StatusOverlay(self.root, self.config_manager)
-        self.speech_indicator = SpeechIndicator(self.root, output_capture_status)
+        self.speech_indicator = SpeechIndicator(self.root, self._speech_capture_status)
         self.pipeline = AppPipeline(
             self.config_manager,
             self.error_handler,
@@ -48,7 +50,6 @@ class Application:
         )
         self.input_hotkey_manager = HotkeyManager(self.show_input)
         self.microphone_hotkey_manager = HotkeyManager(self.on_microphone_hotkey_press)
-        self.speech_overlay_position_hotkey_manager = HotkeyManager(self.toggle_speech_overlay_position)
         self.preset_next_hotkey_manager = HotkeyManager(self.switch_next_preset)
         self.preset_hotkey_managers = [HotkeyManager(lambda index=index: self.switch_preset(index)) for index in range(1, PRESET_COUNT + 1)]
         self.tray = TrayApp(self.config_manager, self.show_input, self.quit)
@@ -60,6 +61,20 @@ class Application:
         self._pending_mic_job: str | None = None
         self._pending_mic_countdown_seconds = 0
         self._mic_press_cancelled_pipeline = False
+
+    def _speech_capture_status(self) -> dict:
+        """返回双说话指示器状态：translate=实时翻译听到的声音（蓝），mic=自己麦克风 VAD（绿）。"""
+        pipeline_status = PIPELINE.status()
+        translate_speaking = bool(pipeline_status.get("running")) and bool(pipeline_status.get("speaking"))
+        if not translate_speaking:
+            legacy = output_capture_status()
+            translate_speaking = bool(legacy.get("enabled")) and bool(legacy.get("speaking"))
+        mic_speaking = False
+        listener = self.mic_listener
+        if isinstance(listener, VadMicListener):
+            mic_status = listener.status()
+            mic_speaking = bool(mic_status.get("enabled")) and bool(mic_status.get("speaking"))
+        return {"translate_speaking": translate_speaking, "mic_speaking": mic_speaking}
 
     def start(self) -> None:
         config = self.config_manager.get()
@@ -124,7 +139,6 @@ class Application:
         config = self.config_manager.get()
         self.input_hotkey_manager.unregister()
         self.microphone_hotkey_manager.unregister()
-        self.speech_overlay_position_hotkey_manager.unregister()
         self.preset_next_hotkey_manager.unregister()
         for manager in self.preset_hotkey_managers:
             manager.unregister()
@@ -133,7 +147,6 @@ class Application:
         self.start_microphone_listener(config)
         self.reload_hotkey()
         self.reload_microphone_hotkey()
-        self.reload_speech_overlay_position_hotkey()
         self.reload_preset_hotkeys()
 
     def switch_next_preset(self) -> None:
@@ -173,18 +186,6 @@ class Application:
         except Exception as exc:
             self.error_handler.report("预设切换热键注册失败", exc)
 
-    def toggle_speech_overlay_position(self) -> None:
-        self.speech_indicator.toggle_text_position()
-
-    def reload_speech_overlay_position_hotkey(self) -> None:
-        try:
-            config = self.config_manager.get()
-            hotkey = config.speech_translate_overlay_position_hotkey.strip()
-            if hotkey:
-                self.speech_overlay_position_hotkey_manager.register(hotkey)
-        except Exception as exc:
-            self.error_handler.report("实时译文位置切换热键注册失败", exc)
-
     def reload_microphone_hotkey(self) -> None:
         try:
             config = self.config_manager.get()
@@ -196,12 +197,20 @@ class Application:
             self.error_handler.report("麦克风热键注册失败", exc)
 
     def start_microphone_listener(self, config) -> None:
-        self.mic_listener = MicrophoneListener(
-            config,
-            text_callback=self.on_microphone_text,
-            error_callback=lambda exc: self.error_handler.report("麦克风监听失败", exc),
-            finish_callback=self.on_microphone_capture_finish,
-        )
+        if config.mic_vad_mode:
+            self.mic_listener = VadMicListener(
+                config,
+                text_callback=self.on_microphone_text,
+                error_callback=lambda exc: self.error_handler.report("麦克风 VAD 监听失败", exc),
+            )
+            self.mic_listener.start()
+        else:
+            self.mic_listener = MicrophoneListener(
+                config,
+                text_callback=self.on_microphone_text,
+                error_callback=lambda exc: self.error_handler.report("麦克风监听失败", exc),
+                finish_callback=self.on_microphone_capture_finish,
+            )
 
     def on_microphone_hotkey_press(self) -> None:
         self.root.after(0, self._handle_microphone_hotkey_press)
@@ -229,6 +238,9 @@ class Application:
             return
         if self.mic_listener is None:
             return
+        if isinstance(self.mic_listener, VadMicListener):
+            self.status_overlay.show_hint("VAD 持续监听中：先说话，识别出文字后再按热键发送")
+            return
         if self.mic_listener.start_capture():
             self._pending_mic_started_at = time.perf_counter()
             self.show_typing_bubble()
@@ -244,8 +256,9 @@ class Application:
             self._clear_pending_microphone_text()
             self.status_overlay.show_cancelled("已取消当前 TTS 操作", hide_after_ms=2200)
             return
-        if self.mic_listener is not None:
-            self.mic_listener.stop_capture()
+        if self.mic_listener is None or isinstance(self.mic_listener, VadMicListener):
+            return
+        self.mic_listener.stop_capture()
         self.status_overlay.show_progress(0, self.pipeline.TOTAL_STEPS, "录音结束，正在识别文字...")
 
     def stop_microphone_listener(self) -> None:
@@ -273,6 +286,7 @@ class Application:
         self._clear_pending_microphone_text()
         self._pending_mic_text = text
         self._pending_mic_countdown_seconds = max(1, int(self.config_manager.get().listen_confirm_timeout_seconds))
+        self.show_typing_bubble()
         self._refresh_pending_microphone_countdown()
 
     def _refresh_pending_microphone_countdown(self) -> None:
@@ -314,11 +328,11 @@ class Application:
 
     def quit(self) -> None:
         self.hide_typing_bubble()
+        PIPELINE.stop()
         self.stop_microphone_listener()
         self._clear_pending_microphone_text()
         self.input_hotkey_manager.unregister()
         self.microphone_hotkey_manager.unregister()
-        self.speech_overlay_position_hotkey_manager.unregister()
         self.preset_next_hotkey_manager.unregister()
         for manager in self.preset_hotkey_managers:
             manager.unregister()

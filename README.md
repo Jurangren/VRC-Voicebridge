@@ -18,8 +18,9 @@ VRC VoiceBridge 是一个面向 Windows 和 VRChat 的 Python 托盘后台程序
 - 提交后会在屏幕左下角显示悬浮状态窗口，展示当前步骤和 x/x 进度。
 - 悬浮状态窗口支持透明度设置；处理中、成功、正在播放音频为绿色，失败为红色。
 - 默认把中文翻译成日文。
-- 支持 Google 翻译、微软翻译、腾讯翻译和百度翻译，可在 Web 设置面板中选择，默认翻译失败重试次数为 2。
-- 提供“实时语音翻译”Web 页面：监听指定输出设备的系统播放声音，按片段识别语音，调用当前设置的翻译渠道实时显示译文，并在浏览器本地保存翻译历史。
+- 支持 Google 翻译、微软翻译、腾讯翻译、百度翻译和本地 LLM（Ollama / LM Studio / llama.cpp server 等 OpenAI 兼容服务，推荐 qwen3:8b），可在 Web 设置面板中选择，默认翻译失败重试次数为 2。
+- 提供“实时语音翻译”Web 页面：采集系统输出音频，经 Silero VAD 分段、声纹聚类区分说话人（[A]/[B] 字母标签 + 每人独立颜色）、本地 faster-whisper（CUDA GPU）识别后，调用当前设置的翻译渠道实时显示译文，并在浏览器本地保存翻译历史。
+- 麦克风支持两种发送模式：按住热键录音（默认），或开启“VAD 持续监听”后自动检测说话并识别，识别结果保留数秒（重新说话覆盖），期间按热键直接翻译发送。
 - 使用 OpenAI TTS 生成语音，支持自定义 API Key、Base URL、模型、音色、输出格式、超时和失败重试次数。
 - 默认 TTS 失败重试次数为 2。
 - 通过 VRChat OSC 发送聊天气泡文本。
@@ -66,6 +67,12 @@ vrc-voicebridge/
     tts_client.py                 OpenAI TTS 调用和重试
     osc_client.py                 VRChat OSC 客户端
     audio_player.py               PyAudio 音频设备扫描和播放
+    vad.py                        Silero VAD 流式封装与语音分段状态机
+    speaker_cluster.py            声纹嵌入提取（sherpa-onnx CAM++）与在线聚类
+    realtime_pipeline.py          实时翻译管线：采集 → VAD → 声纹 → Whisper → 翻译
+    local_whisper.py              本地 faster-whisper GPU 推理
+    mic_listener.py               按键麦克风录音与识别（输入框模式）
+    output_capture.py             输出设备采集（旧版能量阈值接口）
   ui/
     __init__.py
     input_window.py               Tkinter 输入框
@@ -80,7 +87,7 @@ vrc-voicebridge/
       speech_translate.html       实时语音翻译页面模板
     static/
       style.css                   Web 页面样式
-      speech_translate.js         输出设备实时翻译页面交互与历史记录
+      speech_translate.js         实时翻译页面交互（启动/停止管线、事件轮询、历史记录）
 ```
 
 ## 环境要求
@@ -250,23 +257,30 @@ http://127.0.0.1:8765/
 http://127.0.0.1:8765/speech-translate
 ```
 
+处理架构：
+
+```text
+麦克风/系统输出音频 → Silero VAD 语音分段 → 声纹聚类（区分说话人） → 本地 faster-whisper（CUDA GPU） → 翻译 API → 页面/桌面浮窗显示
+```
+
+VAD、声纹、语音识别全部本地离线推理，仅翻译走在线 API。
+
 使用方式：
 
 1. 打开页面。
-2. 点击“刷新输出设备”。
-3. 在输出设备下拉框中选择要监听的扬声器、耳机或虚拟输出设备，或保留系统默认输出设备。
-4. 设置单次最长监听秒数、语音能量阈值、静音结束毫秒、源语言/识别语言、目标语言和翻译渠道。
-5. 点击“开始实时翻译”，页面会显示实时识别文本、翻译结果和历史记录。
+2. 点击“刷新音频设备”。
+3. 选择音频来源：麦克风（默认）或系统输出回环（监听扬声器/耳机播放的声音，适合 VRChat/游戏/播放器输出）。
+4. 按需调整 VAD 语音阈值、静音结束毫秒、最短语音毫秒、单段最长语音秒数，以及声纹聚类、源语言/目标语言和翻译渠道。
+5. 点击“开始实时翻译”，后端管线常驻运行，页面轮询显示带说话人编号的识别文本、翻译结果和历史记录。
 
 注意事项：
 
-- 输出设备监听由本地后端通过 Windows WASAPI loopback 捕获完成，适合监听系统播放声音、VRChat/游戏/播放器输出或虚拟音频输出。
-- 参考 kikitan-translator 的桌面音频捕获/VAD 思路，本页不再按固定长度硬切音频，而是用能量阈值检测语音开始，并在持续静音后提交整段语音，减少文本被截断的问题。
+- 语音分段使用 faster-whisper 自带的 Silero VAD ONNX 模型（CPU 流式推理，32ms 窗口），不再依赖能量阈值判断。
+- 声纹聚类对每个语音片段提取 CAM++ 声纹向量（sherpa-onnx，CPU 推理），按余弦相似度在线聚类。首次启用会自动下载约 28MB 模型到 `models/` 目录（依次尝试 hf-mirror / GitHub / Hugging Face），也可手动下载后在页面“声纹模型路径”填写文件路径。
+- 语音识别固定使用本地 faster-whisper（默认 large-v3-turbo），强制 CUDA GPU，不回退 CPU。首次使用会从 Hugging Face 下载模型；网络异常时可手动下载 faster-whisper 模型目录，再在页面“本地 Whisper 模型”中填写本地目录路径。
+- 系统输出监听通过 Windows WASAPI loopback 捕获。
 - 页面配置可点击“保存配置”写入本地 `config.json`，下次打开页面会自动加载。
-- 语音识别仍复用项目现有识别渠道：Google 语音识别或腾讯云语音识别，识别能力、联网行为和可用语言取决于所选渠道。
 - 翻译历史保存在浏览器 `localStorage` 中，不会写入项目配置文件。
-- 当前实现没有引入本地推理模型；如果以后接入本地 ASR 或本地翻译模型，必须使用 GPU 推理后端。
-- 如果实时语音翻译选择“本地 GPU Whisper large-v3-turbo”，需要安装 `faster-whisper`，并且本机必须有可用 NVIDIA GPU。本地 Whisper 强制使用 CUDA，不会回退 CPU。首次使用会从 Hugging Face 下载模型；如果网络或证书异常，可以先手动下载 faster-whisper 模型目录，再在页面“本地 Whisper 模型”中填写本地目录路径。
 
 ## VRChat OSC 默认路径
 

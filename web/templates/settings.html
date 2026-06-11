@@ -2,20 +2,31 @@
 <html lang="zh-CN">
 <head>
   <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>VRC VoiceBridge 设置</title>
   <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
 </head>
 <body>
   <main>
-    <nav class="top-nav">
-      <a href="/" aria-current="page">设置</a>
-      <a href="/speech-translate">实时语音翻译</a>
-    </nav>
-    <h1>VRC VoiceBridge 设置</h1>
+    <header class="app-header">
+      <div class="brand"><span class="brand-dot"></span>VRC VoiceBridge</div>
+      <nav class="top-nav">
+        <a href="/" aria-current="page">设置</a>
+        <a href="/speech-translate">实时语音翻译</a>
+      </nav>
+    </header>
+
+    <div class="page-head">
+      <h1>设置</h1>
+      <p class="hint">输入框翻译 + TTS 发声到 VRChat 的全部配置。修改后记得点击底部“保存设置”。</p>
+    </div>
+
     <section class="preset-panel" data-preset-panel data-apply-behavior="reload">
       <h2>预设系统</h2>
       <p class="hint">5 套预设会保存本页普通设置和“实时语音翻译”页的所有设置。切换预设前会自动保存当前预设。</p>
-      <label>切换下一个预设热键 <input data-preset-next-hotkey></label>
+      <div class="grid">
+        <label>切换下一个预设热键 <input data-preset-next-hotkey></label>
+      </div>
       <div class="preset-list" data-preset-list></div>
       <div class="actions">
         <button type="button" data-save-preset-meta>保存预设名称/热键</button>
@@ -23,67 +34,112 @@
       </div>
       <p class="status-text" data-preset-status></p>
     </section>
+
     <form method="post" action="/save">
       <section>
         <h2>基础</h2>
         <input type="hidden" name="run_mode" value="both">
-        <h3>热键配置</h3>
-        <label>输入框热键 <input name="input_hotkey" value="{{ config.input_hotkey or config.hotkey }}"></label>
-        <label>麦克风按住录音热键 <input name="microphone_hotkey" value="{{ config.microphone_hotkey }}"></label>
+        <div class="grid">
+          <label>输入框热键 <input name="input_hotkey" value="{{ config.input_hotkey or config.hotkey }}"></label>
+          <label>麦克风按住录音热键 <input name="microphone_hotkey" value="{{ config.microphone_hotkey }}"></label>
+          <label>Web Host <input name="web_host" value="{{ config.web_host }}"></label>
+          <label>Web Port <input name="web_port" type="number" value="{{ config.web_port }}"></label>
+        </div>
         <input type="hidden" name="hotkey" value="{{ config.input_hotkey or config.hotkey }}">
         <p class="hint">输入框热键与麦克风热键会同时生效，请设置为不同按键。输入框热键用于打开/隐藏输入框；麦克风热键用于按住录音、松开识别、二次按下确认发送。</p>
-        <label>Web Host <input name="web_host" value="{{ config.web_host }}"></label>
-        <label>Web Port <input name="web_port" type="number" value="{{ config.web_port }}"></label>
       </section>
 
       <section>
         <h2>麦克风按键监听</h2>
-        <label>监听麦克风设备
-          <select name="listen_mic_device_index" id="listen_mic_device_index" data-current="{{ config.listen_mic_device_index }}">
-            <option value="-1">系统默认输入设备</option>
-          </select>
-        </label>
-        <label>监听音量阈值 <input name="listen_energy_threshold" type="number" min="1" value="{{ config.listen_energy_threshold }}"></label>
-        <label>单次语音最长秒数 <input name="listen_phrase_time_limit" type="number" min="1" value="{{ config.listen_phrase_time_limit }}"></label>
-        <label>二次按键确认秒数 <input name="listen_confirm_timeout_seconds" type="number" min="1" value="{{ config.listen_confirm_timeout_seconds }}"></label>
-        <label>语音识别渠道
-          <select name="speech_recognition_provider" id="speech_recognition_provider">
-            <option value="google" {% if config.speech_recognition_provider == 'google' %}selected{% endif %}>Google 语音识别</option>
-            <option value="tencent" {% if config.speech_recognition_provider == 'tencent' %}selected{% endif %}>腾讯云语音识别</option>
-          </select>
-        </label>
+        <div class="grid">
+          <label class="span-2">监听麦克风设备
+            <select name="listen_mic_device_index" id="listen_mic_device_index" data-current="{{ config.listen_mic_device_index }}">
+              <option value="-1">系统默认输入设备</option>
+            </select>
+          </label>
+          <label>监听音量阈值 <input name="listen_energy_threshold" type="number" min="1" value="{{ config.listen_energy_threshold }}"></label>
+          <label>单次语音最长秒数 <input name="listen_phrase_time_limit" type="number" min="1" value="{{ config.listen_phrase_time_limit }}"></label>
+          <label>二次按键确认秒数 <input name="listen_confirm_timeout_seconds" type="number" min="1" value="{{ config.listen_confirm_timeout_seconds }}"></label>
+          <label>语音识别语言 <input name="listen_language" value="{{ config.listen_language }}"></label>
+          <label>语音识别渠道
+            <select name="speech_recognition_provider" id="speech_recognition_provider">
+              <option value="google" {% if config.speech_recognition_provider == 'google' %}selected{% endif %}>Google 语音识别</option>
+              <option value="tencent" {% if config.speech_recognition_provider == 'tencent' %}selected{% endif %}>腾讯云语音识别</option>
+              <option value="local_whisper_gpu" {% if config.speech_recognition_provider == 'local_whisper_gpu' %}selected{% endif %}>本地 GPU Whisper（large-v3-turbo）</option>
+            </select>
+          </label>
+        </div>
+
+        <div class="mode-settings">
+          <h3>VAD 持续监听模式</h3>
+          <div class="actions" style="margin-top:0">
+            <label class="toggle">
+              <input name="mic_vad_mode" type="checkbox" {% if config.mic_vad_mode %}checked{% endif %}>
+              <span class="track"></span>
+              开启 VAD 持续监听（无需按住热键录音）
+            </label>
+          </div>
+          <div class="grid">
+            <label>VAD 监听麦克风设备
+              <select name="mic_vad_device_id" id="mic_vad_device_id" data-current="{{ config.mic_vad_device_id }}">
+                <option value="">系统默认麦克风</option>
+              </select>
+            </label>
+            <label>VAD 语音阈值（0~1，越高越不敏感）
+              <input name="mic_vad_threshold" type="number" min="0.05" max="0.95" step="0.05" value="{{ config.mic_vad_threshold }}">
+            </label>
+            <label>静音结束毫秒
+              <input name="mic_vad_silence_ms" type="number" min="100" max="3000" step="100" value="{{ config.mic_vad_silence_ms }}">
+            </label>
+          </div>
+          <p class="hint">开启后用 Silero VAD 实时检测麦克风说话并自动识别，识别结果会保留「二次按键确认秒数」（默认 3 秒，重新说话直接覆盖），在此期间按下麦克风热键即翻译发送，流程与按键录音相同。保存设置后立即生效。</p>
+        </div>
 
         <div class="speech-recognition-settings" data-provider="google">
           <h3>Google 语音识别配置</h3>
-          <p class="hint">Google 语音识别使用下方语言代码，无需 API Key。</p>
+          <p class="hint">Google 语音识别使用上方语言代码，无需 API Key。</p>
+        </div>
+
+        <div class="speech-recognition-settings" data-provider="local_whisper_gpu">
+          <h3>本地 GPU Whisper 配置</h3>
+          <p class="hint">完全离线识别，使用与实时语音翻译相同的 faster-whisper 模型（默认 large-v3-turbo，模型已加载时不占额外显存），识别语言取上方「语音识别语言」。强制 CUDA GPU，不回退 CPU。</p>
         </div>
 
         <div class="speech-recognition-settings" data-provider="tencent">
           <h3>腾讯云语音识别配置</h3>
-          <label>Tencent ASR SecretId <input name="tencent_asr_secret_id" value="{{ config.tencent_asr_secret_id }}"></label>
-          <label>Tencent ASR SecretKey <input name="tencent_asr_secret_key" type="password" value="{{ config.tencent_asr_secret_key }}"></label>
-          <label>Tencent ASR Region <input name="tencent_asr_region" value="{{ config.tencent_asr_region }}"></label>
-          <label>Tencent ASR Endpoint <input name="tencent_asr_endpoint" value="{{ config.tencent_asr_endpoint }}"></label>
-          <label>引擎模型类型 <input name="tencent_asr_engine_model_type" value="{{ config.tencent_asr_engine_model_type }}"></label>
-          <label>过滤脏词 <input name="tencent_asr_filter_dirty" type="number" min="0" max="1" value="{{ config.tencent_asr_filter_dirty }}"></label>
-          <label>过滤语气词 <input name="tencent_asr_filter_modal" type="number" min="0" max="1" value="{{ config.tencent_asr_filter_modal }}"></label>
-          <label>过滤句末标点 <input name="tencent_asr_filter_punc" type="number" min="0" max="1" value="{{ config.tencent_asr_filter_punc }}"></label>
+          <div class="grid">
+            <label>Tencent ASR SecretId <input name="tencent_asr_secret_id" value="{{ config.tencent_asr_secret_id }}"></label>
+            <label>Tencent ASR SecretKey <input name="tencent_asr_secret_key" type="password" value="{{ config.tencent_asr_secret_key }}"></label>
+            <label>Tencent ASR Region <input name="tencent_asr_region" value="{{ config.tencent_asr_region }}"></label>
+            <label>Tencent ASR Endpoint <input name="tencent_asr_endpoint" value="{{ config.tencent_asr_endpoint }}"></label>
+            <label>引擎模型类型 <input name="tencent_asr_engine_model_type" value="{{ config.tencent_asr_engine_model_type }}"></label>
+            <label>过滤脏词 <input name="tencent_asr_filter_dirty" type="number" min="0" max="1" value="{{ config.tencent_asr_filter_dirty }}"></label>
+            <label>过滤语气词 <input name="tencent_asr_filter_modal" type="number" min="0" max="1" value="{{ config.tencent_asr_filter_modal }}"></label>
+            <label>过滤句末标点 <input name="tencent_asr_filter_punc" type="number" min="0" max="1" value="{{ config.tencent_asr_filter_punc }}"></label>
+          </div>
           <p class="hint">SecretId/SecretKey 请从腾讯云访问管理 CAM 的 API 密钥页面复制；默认使用一句话识别 SentenceRecognition，音频会按 16k wav 上传。中文普通话常用引擎为 16k_zh，其他语言请按腾讯云 ASR 文档填写。</p>
         </div>
-        <label>语音识别语言 <input name="listen_language" value="{{ config.listen_language }}"></label>
-        <p class="hint">按住热键期间录音，松开热键后识别为文字；在“二次按键确认秒数”内再次按下热键，才会继续翻译并生成 TTS。选择系统默认时会直接使用操作系统默认输入设备。这里不是虚拟输出麦克风，可以和输出设备完全不同。</p>
+        <p class="hint">按住热键期间录音，松开热键后识别为文字；在“二次按键确认秒数”内再次按下热键，才会继续翻译并生成 TTS。这里不是虚拟输出麦克风，可以和输出设备完全不同。</p>
       </section>
 
       <section>
         <h2>翻译与气泡</h2>
-        <label>翻译服务
-          <select name="translation_provider" id="translation_provider">
-            <option value="google" {% if config.translation_provider == 'google' %}selected{% endif %}>Google 翻译</option>
-            <option value="microsoft" {% if config.translation_provider == 'microsoft' %}selected{% endif %}>微软翻译</option>
-            <option value="tencent" {% if config.translation_provider == 'tencent' %}selected{% endif %}>腾讯翻译</option>
-            <option value="baidu" {% if config.translation_provider == 'baidu' %}selected{% endif %}>百度翻译</option>
-          </select>
-        </label>
+        <div class="grid">
+          <label>翻译服务
+            <select name="translation_provider" id="translation_provider">
+              <option value="google" {% if config.translation_provider == 'google' %}selected{% endif %}>Google 翻译</option>
+              <option value="microsoft" {% if config.translation_provider == 'microsoft' %}selected{% endif %}>微软翻译</option>
+              <option value="tencent" {% if config.translation_provider == 'tencent' %}selected{% endif %}>腾讯翻译</option>
+              <option value="baidu" {% if config.translation_provider == 'baidu' %}selected{% endif %}>百度翻译</option>
+              <option value="local_llm" {% if config.translation_provider == 'local_llm' %}selected{% endif %}>本地 LLM（Ollama 等）</option>
+            </select>
+          </label>
+          <label>源语言 <input name="source_language" value="{{ config.source_language }}"></label>
+          <label>目标语言 <input name="target_language" value="{{ config.target_language }}"></label>
+          <label>翻译失败重试次数 <input name="translation_retry_count" type="number" min="0" value="{{ config.translation_retry_count }}"></label>
+          <label>气泡格式 <input name="bubble_format" value="{{ config.bubble_format.replace('\n', '\\n') }}"></label>
+          <label>状态悬浮窗背景透明度 <input name="overlay_alpha" type="number" min="0.1" max="1" step="0.01" value="{{ config.overlay_alpha }}"></label>
+        </div>
 
         <div class="translation-settings" data-provider="google">
           <h3>Google 翻译配置</h3>
@@ -92,87 +148,128 @@
 
         <div class="translation-settings" data-provider="microsoft">
           <h3>微软翻译配置</h3>
-          <label>Microsoft Translator Key <input name="microsoft_translator_key" type="password" value="{{ config.microsoft_translator_key }}"></label>
-          <label>Microsoft Translator Region <input name="microsoft_translator_region" value="{{ config.microsoft_translator_region }}"></label>
-          <label>Microsoft Translator Endpoint <input name="microsoft_translator_endpoint" value="{{ config.microsoft_translator_endpoint }}"></label>
+          <div class="grid">
+            <label>Microsoft Translator Key <input name="microsoft_translator_key" type="password" value="{{ config.microsoft_translator_key }}"></label>
+            <label>Microsoft Translator Region <input name="microsoft_translator_region" value="{{ config.microsoft_translator_region }}"></label>
+            <label class="span-2">Microsoft Translator Endpoint <input name="microsoft_translator_endpoint" value="{{ config.microsoft_translator_endpoint }}"></label>
+          </div>
           <p class="hint">源语言可填 auto 自动检测；Azure Translator 多服务资源通常需要填写 Region。</p>
         </div>
 
         <div class="translation-settings" data-provider="tencent">
           <h3>腾讯翻译配置</h3>
-          <label>Tencent SecretId <input name="tencent_translator_secret_id" value="{{ config.tencent_translator_secret_id }}"></label>
-          <label>Tencent SecretKey <input name="tencent_translator_secret_key" type="password" value="{{ config.tencent_translator_secret_key }}"></label>
-          <label>Tencent Region <input name="tencent_translator_region" value="{{ config.tencent_translator_region }}"></label>
-          <label>Tencent Endpoint <input name="tencent_translator_endpoint" value="{{ config.tencent_translator_endpoint }}"></label>
+          <div class="grid">
+            <label>Tencent SecretId <input name="tencent_translator_secret_id" value="{{ config.tencent_translator_secret_id }}"></label>
+            <label>Tencent SecretKey <input name="tencent_translator_secret_key" type="password" value="{{ config.tencent_translator_secret_key }}"></label>
+            <label>Tencent Region <input name="tencent_translator_region" value="{{ config.tencent_translator_region }}"></label>
+            <label>Tencent Endpoint <input name="tencent_translator_endpoint" value="{{ config.tencent_translator_endpoint }}"></label>
+          </div>
           <p class="hint">SecretId/SecretKey 请从腾讯云访问管理 CAM 的 API 密钥页面复制，不是 AppID；源语言可填 auto 自动检测；常用中文源语言会自动把 zh-CN 转为腾讯接口使用的 zh。</p>
+        </div>
+
+        <div class="translation-settings" data-provider="local_llm">
+          <h3>本地 LLM 翻译配置</h3>
+          <div class="grid">
+            <label>API 地址（OpenAI 兼容） <input name="local_llm_endpoint" value="{{ config.local_llm_endpoint }}"></label>
+            <label>模型名 <input name="local_llm_model" value="{{ config.local_llm_model }}"></label>
+            <label>API Key（Ollama 留空） <input name="local_llm_api_key" type="password" value="{{ config.local_llm_api_key }}"></label>
+            <label>超时秒数 <input name="local_llm_timeout_seconds" type="number" min="5" value="{{ config.local_llm_timeout_seconds }}"></label>
+            <label class="span-2">翻译 Prompt（可用变量：{source} 源语言、{target} 目标语言；留空恢复默认）
+              <textarea name="local_llm_prompt" rows="3">{{ config.local_llm_prompt }}</textarea>
+            </label>
+          </div>
+          <p class="hint">完全离线翻译，中日英互译。API 地址不带 /v1 时走 Ollama 原生接口（推荐，自动关闭思考模式速度更快）；带 /v1 时走 OpenAI 兼容接口（LM Studio / llama.cpp server 等）。推荐模型 qwen3.5:4b（速度快）或 qwen3:8b（质量略好），安装：ollama pull qwen3.5:4b。本渠道在实时语音翻译页同样可选。</p>
         </div>
 
         <div class="translation-settings" data-provider="baidu">
           <h3>百度翻译配置</h3>
-          <label>Baidu App ID <input name="baidu_translator_app_id" value="{{ config.baidu_translator_app_id }}"></label>
-          <label>Baidu 密钥 <input name="baidu_translator_secret_key" type="password" value="{{ config.baidu_translator_secret_key }}"></label>
-          <label>Baidu Endpoint <input name="baidu_translator_endpoint" value="{{ config.baidu_translator_endpoint }}"></label>
+          <div class="grid">
+            <label>Baidu App ID <input name="baidu_translator_app_id" value="{{ config.baidu_translator_app_id }}"></label>
+            <label>Baidu 密钥 <input name="baidu_translator_secret_key" type="password" value="{{ config.baidu_translator_secret_key }}"></label>
+            <label class="span-2">Baidu Endpoint <input name="baidu_translator_endpoint" value="{{ config.baidu_translator_endpoint }}"></label>
+          </div>
           <p class="hint">App ID 和密钥请从百度翻译开放平台通用翻译 API 应用中获取；源语言可填 auto 自动检测；目标日语会自动把 ja 转为百度接口使用的 jp。</p>
         </div>
 
-        <label>源语言 <input name="source_language" value="{{ config.source_language }}"></label>
-        <label>目标语言 <input name="target_language" value="{{ config.target_language }}"></label>
-        <label>气泡格式 <input name="bubble_format" value="{{ config.bubble_format.replace('\n', '\\n') }}"></label>
-        <label>翻译失败重试次数 <input name="translation_retry_count" type="number" min="0" value="{{ config.translation_retry_count }}"></label>
-        <label>状态悬浮窗背景透明度 <input name="overlay_alpha" type="number" min="0.1" max="1" step="0.01" value="{{ config.overlay_alpha }}"></label>
-        <p class="hint">可用变量：{original}、{translated}。透明度范围 0.1 到 1，数值越小越透明。</p>
+        <p class="hint">气泡格式可用变量：{original}、{translated}。透明度范围 0.1 到 1，数值越小越透明。</p>
       </section>
 
       <section>
         <h2>OpenAI TTS</h2>
-        <label>API Key <input name="openai_api_key" type="password" value="{{ config.openai_api_key }}"></label>
-        <label>Base URL <input name="openai_base_url" value="{{ config.openai_base_url }}"></label>
-        <label>模型 <input name="openai_tts_model" value="{{ config.openai_tts_model }}"></label>
-        <label>音色 <input name="openai_tts_voice" value="{{ config.openai_tts_voice }}"></label>
-        <label>输出格式 <input name="openai_tts_format" value="{{ config.openai_tts_format }}"></label>
-        <label>失败重试次数 <input name="tts_retry_count" type="number" min="0" value="{{ config.tts_retry_count }}"></label>
-        <label>超时秒数 <input name="tts_timeout_seconds" type="number" min="5" value="{{ config.tts_timeout_seconds }}"></label>
+        <div class="grid">
+          <label>API Key <input name="openai_api_key" type="password" value="{{ config.openai_api_key }}"></label>
+          <label>Base URL <input name="openai_base_url" value="{{ config.openai_base_url }}"></label>
+          <label>模型 <input name="openai_tts_model" value="{{ config.openai_tts_model }}"></label>
+          <label>音色 <input name="openai_tts_voice" value="{{ config.openai_tts_voice }}"></label>
+          <label>输出格式 <input name="openai_tts_format" value="{{ config.openai_tts_format }}"></label>
+          <label>失败重试次数 <input name="tts_retry_count" type="number" min="0" value="{{ config.tts_retry_count }}"></label>
+          <label>超时秒数 <input name="tts_timeout_seconds" type="number" min="5" value="{{ config.tts_timeout_seconds }}"></label>
+        </div>
       </section>
 
       <section>
         <h2>VRChat OSC</h2>
-        <label>OSC Host <input name="osc_host" value="{{ config.osc_host }}"></label>
-        <label>OSC Port <input name="osc_port" type="number" value="{{ config.osc_port }}"></label>
-        <label>聊天框路径 <input name="osc_chatbox_path" value="{{ config.osc_chatbox_path }}"></label>
-        <label>正在输入路径 <input name="osc_typing_path" value="{{ config.osc_typing_path }}"></label>
-        <label>开麦路径 <input name="osc_voice_path" value="{{ config.osc_voice_path }}"></label>
-        <label><input name="osc_chat_enter" type="checkbox" {% if config.osc_chat_enter %}checked{% endif %}> 发送后立即提交聊天框</label>
-        <label><input name="osc_chat_notify" type="checkbox" {% if config.osc_chat_notify %}checked{% endif %}> 聊天框通知音</label>
+        <div class="grid">
+          <label>OSC Host <input name="osc_host" value="{{ config.osc_host }}"></label>
+          <label>OSC Port <input name="osc_port" type="number" value="{{ config.osc_port }}"></label>
+          <label>聊天框路径 <input name="osc_chatbox_path" value="{{ config.osc_chatbox_path }}"></label>
+          <label>正在输入路径 <input name="osc_typing_path" value="{{ config.osc_typing_path }}"></label>
+          <label>开麦路径 <input name="osc_voice_path" value="{{ config.osc_voice_path }}"></label>
+        </div>
+        <div class="actions">
+          <label class="toggle">
+            <input name="osc_chat_enter" type="checkbox" {% if config.osc_chat_enter %}checked{% endif %}>
+            <span class="track"></span>
+            发送后立即提交聊天框
+          </label>
+          <label class="toggle">
+            <input name="osc_chat_notify" type="checkbox" {% if config.osc_chat_notify %}checked{% endif %}>
+            <span class="track"></span>
+            聊天框通知音
+          </label>
+        </div>
       </section>
 
       <section>
         <h2>音频</h2>
-        <label>虚拟麦克风设备关键字 <input name="virtual_audio_device_keyword" value="{{ config.virtual_audio_device_keyword }}"></label>
-        <label><input name="play_to_speaker" type="checkbox" {% if config.play_to_speaker %}checked{% endif %}> 同时播放到默认扬声器/耳机</label>
-        <label>本地播放音量 <input name="speaker_volume" type="number" min="0" max="2" step="0.01" value="{{ config.speaker_volume }}"></label>
-        <label>音频块大小 <input name="audio_chunk_size" type="number" value="{{ config.audio_chunk_size }}"></label>
+        <div class="grid">
+          <label>虚拟麦克风设备关键字 <input name="virtual_audio_device_keyword" value="{{ config.virtual_audio_device_keyword }}"></label>
+          <label>本地播放音量 <input name="speaker_volume" type="number" min="0" max="2" step="0.01" value="{{ config.speaker_volume }}"></label>
+          <label>音频块大小 <input name="audio_chunk_size" type="number" value="{{ config.audio_chunk_size }}"></label>
+        </div>
+        <div class="actions">
+          <label class="toggle">
+            <input name="play_to_speaker" type="checkbox" {% if config.play_to_speaker %}checked{% endif %}>
+            <span class="track"></span>
+            同时播放到默认扬声器/耳机
+          </label>
+        </div>
         <p class="hint">本地播放音量只影响默认扬声器/耳机监听，不影响输出到虚拟麦克风的音量。0 为静音，1 为原始音量，2 为 200%。</p>
       </section>
 
-      <button type="submit">保存设置</button>
+      <div class="actions">
+        <button type="submit" class="btn-lg">保存设置</button>
+      </div>
     </form>
 
-    <div class="actions">
-      <form method="post" action="/open-input"><button>打开输入框</button></form>
-      <button onclick="postJson('/test-osc')">测试 OSC</button>
-      <button onclick="postJson('/test-tts')">测试 TTS</button>
-      <button onclick="loadDevices()">扫描音频设备</button>
-    </div>
-
     <section>
-      <h2>音频设备</h2>
+      <h2>工具</h2>
+      <div class="actions">
+        <form method="post" action="/open-input" style="display:inline"><button>打开输入框</button></form>
+        <button onclick="postJson('/test-osc')">测试 OSC</button>
+        <button onclick="postJson('/test-tts')">测试 TTS</button>
+        <button onclick="loadDevices()">扫描音频设备</button>
+      </div>
+      <h3>音频设备</h3>
       <pre id="devices">点击“扫描音频设备”查看。结果会同时列出 output 输出设备和 input 输入设备。</pre>
     </section>
 
-    <section>
-      <h2>最近错误</h2>
-      <pre>{{ last_error or '暂无错误' }}</pre>
-    </section>
+    <details class="card">
+      <summary>最近错误</summary>
+      <div class="card-body">
+        <pre>{{ last_error or '暂无错误' }}</pre>
+      </div>
+    </details>
   </main>
   <script src="{{ url_for('static', filename='presets.js') }}"></script>
   <script>
@@ -192,6 +289,22 @@
       const res = await fetch('/devices/input');
       const data = await res.json();
       populateInputDevices(Array.isArray(data) ? data : []);
+    }
+
+    async function loadVadMicOptions() {
+      const res = await fetch('/api/speech-translate/devices');
+      const data = await res.json();
+      const select = document.getElementById('mic_vad_device_id');
+      if (!select) return;
+      const current = String(select.dataset.current || '');
+      select.innerHTML = '<option value="">系统默认麦克风</option>';
+      (data.microphones || []).forEach((device) => {
+        const option = document.createElement('option');
+        option.value = device.id;
+        option.textContent = `#${device.index} ${device.name}`;
+        if (device.id === current) option.selected = true;
+        select.appendChild(option);
+      });
     }
 
     function populateInputDevices(devices) {
@@ -227,6 +340,7 @@
     updateTranslationSettingsVisibility();
     updateSpeechRecognitionSettingsVisibility();
     loadInputDeviceOptions();
+    loadVadMicOptions();
   </script>
 </body>
 </html>

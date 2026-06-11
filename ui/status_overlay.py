@@ -1,95 +1,141 @@
 from __future__ import annotations
 
 import tkinter as tk
-from tkinter import ttk
 
 from core.config import ConfigManager
+
+BG = "#131826"
+TEXT = "#e8edf6"
+TEXT_DIM = "#8b97ad"
+TRANSPARENT = "#ff00fe"
+
+STATE_COLORS = {
+    "progress": "#34d399",
+    "done": "#34d399",
+    "error": "#f87171",
+    "warning": "#fbbf24",
+    "cancelled": "#fbbf24",
+}
 
 
 class StatusOverlay:
     FADE_STEP_MS = 25
     FADE_STEPS = 8
+    MIN_WIDTH = 300
 
     def __init__(self, root: tk.Tk, config_manager: ConfigManager):
         self.root = root
         self.config_manager = config_manager
         self.window: tk.Toplevel | None = None
-        self.status_var = tk.StringVar(value="待机")
-        self.progress_var = tk.StringVar(value="0/0")
+        self.canvas: tk.Canvas | None = None
         self._hide_job: str | None = None
         self._fade_job: str | None = None
-        self.status_label: ttk.Label | None = None
-        self.progress_label: ttk.Label | None = None
+        self._state = "progress"
+        self._badge = "0/0"
+        self._message = "待机"
 
     def show_progress(self, step: int, total: int, message: str) -> None:
-        self.root.after(0, lambda: self._show_progress(step, total, message))
+        self.root.after(0, lambda: self._show("progress", f"{step}/{total}", message))
 
     def show_warning(self, message: str, hide_after_ms: int = 2200) -> None:
-        self.root.after(0, lambda: self._show_warning(message, hide_after_ms))
+        self.root.after(0, lambda: self._show("warning", "超时", message, hide_after_ms))
 
     def show_done(self, message: str = "完成", hide_after_ms: int = 2200) -> None:
-        self.root.after(0, lambda: self._show_done(message, hide_after_ms))
+        self.root.after(0, lambda: self._show("done", "完成", message, hide_after_ms))
 
     def show_error(self, message: str = "失败，请查看错误弹窗", hide_after_ms: int = 5000) -> None:
-        self.root.after(0, lambda: self._show_error(message, hide_after_ms))
+        self.root.after(0, lambda: self._show("error", "失败", message, hide_after_ms))
 
     def show_cancelled(self, message: str = "已取消", hide_after_ms: int = 2200) -> None:
-        self.root.after(0, lambda: self._show_cancelled(message, hide_after_ms))
+        self.root.after(0, lambda: self._show("cancelled", "取消", message, hide_after_ms))
+
+    def show_hint(self, message: str, hide_after_ms: int = 2200) -> None:
+        self.root.after(0, lambda: self._show("progress", "提示", message, hide_after_ms))
 
     def hide(self) -> None:
         self.root.after(0, self._hide)
 
+    def _show(self, state: str, badge: str, message: str, hide_after_ms: int | None = None) -> None:
+        self._cancel_hide()
+        self._state = state
+        self._badge = badge
+        self._message = str(message)
+        self._ensure_window()
+        self._render()
+        self._show_window()
+        if hide_after_ms is not None:
+            self._hide_job = self.root.after(hide_after_ms, self._hide)
+
     def _ensure_window(self) -> None:
         if self.window is not None and self.window.winfo_exists():
             return
-
         self.window = tk.Toplevel(self.root)
         self.window.title("VRC TTS 状态")
         self.window.overrideredirect(True)
         self.window.attributes("-topmost", True)
         self.window.attributes("-alpha", 0.0)
+        self.window.configure(bg=TRANSPARENT)
+        try:
+            self.window.wm_attributes("-transparentcolor", TRANSPARENT)
+        except tk.TclError:
+            pass
+        self.canvas = tk.Canvas(self.window, highlightthickness=0, bd=0, bg=TRANSPARENT)
+        self.canvas.pack(fill="both", expand=True)
 
-        frame = ttk.Frame(self.window, padding=(14, 10))
-        frame.pack(fill="both", expand=True)
+    def _render(self) -> None:
+        if self.canvas is None:
+            return
+        color = STATE_COLORS.get(self._state, STATE_COLORS["progress"])
+        message_font = ("Microsoft YaHei UI", 10)
+        self.canvas.delete("all")
 
-        title = ttk.Label(frame, text="VRC TTS", font=("Microsoft YaHei UI", 10, "bold"))
-        title.grid(row=0, column=0, sticky="w")
+        # 先放一次文字测量尺寸
+        probe = self.canvas.create_text(0, 0, text=self._message, anchor="nw", font=message_font, width=420)
+        bbox = self.canvas.bbox(probe) or (0, 0, 200, 18)
+        self.canvas.delete(probe)
+        text_width = bbox[2] - bbox[0]
+        text_height = bbox[3] - bbox[1]
+        width = max(self.MIN_WIDTH, text_width + 44)
+        height = text_height + 52
+        self.canvas.configure(width=width, height=height)
 
-        self.progress_label = ttk.Label(frame, textvariable=self.progress_var, font=("Consolas", 10, "bold"))
-        self.progress_label.grid(row=0, column=1, sticky="e", padx=(18, 0))
+        self._draw_round_rect(self.canvas, 1, 1, width - 2, height - 2, 14, fill=BG, outline=color)
+        self.canvas.create_rectangle(1, 16, 4, height - 16, fill=color, outline="")
+        self.canvas.create_oval(16, 14, 25, 23, fill=color, outline="")
+        self.canvas.create_text(32, 11, text="VRC TTS", anchor="nw", fill=TEXT_DIM, font=("Microsoft YaHei UI", 9, "bold"))
+        self.canvas.create_text(width - 16, 11, text=self._badge, anchor="ne", fill=color, font=("Consolas", 10, "bold"))
+        self.canvas.create_text(16, 36, text=self._message, anchor="nw", fill=TEXT, font=message_font, width=width - 32)
+        self._place_bottom_center(width, height)
 
-        self.status_label = ttk.Label(frame, textvariable=self.status_var, font=("Microsoft YaHei UI", 10))
-        self.status_label.grid(row=1, column=0, columnspan=2, sticky="w", pady=(6, 0))
+    @staticmethod
+    def _draw_round_rect(canvas: tk.Canvas, x1: int, y1: int, x2: int, y2: int, radius: int, **kwargs) -> None:
+        points = [
+            x1 + radius, y1,
+            x2 - radius, y1,
+            x2, y1,
+            x2, y1 + radius,
+            x2, y2 - radius,
+            x2, y2,
+            x2 - radius, y2,
+            x1 + radius, y2,
+            x1, y2,
+            x1, y2 - radius,
+            x1, y1 + radius,
+            x1, y1,
+        ]
+        canvas.create_polygon(points, smooth=True, splinesteps=18, **kwargs)
 
-        frame.columnconfigure(0, weight=1)
-        self._place_bottom_left()
-
-    def _apply_alpha(self) -> None:
+    def _place_bottom_center(self, width: int, height: int) -> None:
         if self.window is None:
             return
-        self.window.attributes("-alpha", self._target_alpha())
-
-    def _target_alpha(self) -> float:
-        alpha = min(max(self.config_manager.get().overlay_alpha, 0.1), 1.0)
-        return alpha
-
-    def _set_text_color(self, color: str) -> None:
-        if self.status_label is not None:
-            self.status_label.configure(foreground=color)
-        if self.progress_label is not None:
-            self.progress_label.configure(foreground=color)
-
-    def _place_bottom_left(self) -> None:
-        if self.window is None:
-            return
-        self.window.update_idletasks()
-        width = max(self.window.winfo_reqwidth(), 280)
-        height = max(self.window.winfo_reqheight(), 72)
         screen_width = self.window.winfo_screenwidth()
         screen_height = self.window.winfo_screenheight()
         x = max((screen_width - width) // 2, 0)
         y = screen_height - height - 58
         self.window.geometry(f"{width}x{height}+{x}+{y}")
+
+    def _target_alpha(self) -> float:
+        return min(max(self.config_manager.get().overlay_alpha, 0.1), 1.0)
 
     def _cancel_hide(self) -> None:
         if self._hide_job is not None:
@@ -131,55 +177,6 @@ class StatusOverlay:
         if was_hidden:
             self.window.attributes("-alpha", 0.0)
         self._fade_to(self._target_alpha())
-
-    def _show_progress(self, step: int, total: int, message: str) -> None:
-        self._cancel_hide()
-        self._ensure_window()
-        self._set_text_color("#2ecc71")
-        self.progress_var.set(f"{step}/{total}")
-        self.status_var.set(message)
-        self._place_bottom_left()
-        self._show_window()
-
-    def _show_done(self, message: str, hide_after_ms: int) -> None:
-        self._ensure_window()
-        self._set_text_color("#2ecc71")
-        self.progress_var.set("完成")
-        self.status_var.set(message)
-        self._place_bottom_left()
-        self._show_window()
-        self._cancel_hide()
-        self._hide_job = self.root.after(hide_after_ms, self._hide)
-
-    def _show_error(self, message: str, hide_after_ms: int) -> None:
-        self._ensure_window()
-        self._set_text_color("#ff4d4f")
-        self.progress_var.set("失败")
-        self.status_var.set(message)
-        self._place_bottom_left()
-        self._show_window()
-        self._cancel_hide()
-        self._hide_job = self.root.after(hide_after_ms, self._hide)
-
-    def _show_warning(self, message: str, hide_after_ms: int) -> None:
-        self._ensure_window()
-        self._set_text_color("#ff4d4f")
-        self.progress_var.set("超时")
-        self.status_var.set(message)
-        self._place_bottom_left()
-        self._show_window()
-        self._cancel_hide()
-        self._hide_job = self.root.after(hide_after_ms, self._hide)
-
-    def _show_cancelled(self, message: str, hide_after_ms: int) -> None:
-        self._ensure_window()
-        self._set_text_color("#faad14")
-        self.progress_var.set("取消")
-        self.status_var.set(message)
-        self._place_bottom_left()
-        self._show_window()
-        self._cancel_hide()
-        self._hide_job = self.root.after(hide_after_ms, self._hide)
 
     def _hide(self) -> None:
         self._cancel_hide()

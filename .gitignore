@@ -1,3 +1,6 @@
+# Downloaded inference models
+models/
+
 # Python cache / bytecode
 __pycache__/
 *.py[cod]

@@ -32,8 +32,12 @@ async function loadPresetPanel() {
       `;
       row.querySelector('[data-preset-name]').value = preset.name || `预设 ${preset.index}`;
       row.querySelector('[data-preset-hotkey]').value = preset.hotkey || '';
-      row.querySelector('[data-apply-preset]').addEventListener('click', () => applyPreset(preset.index));
-      row.querySelector('[data-save-preset]').addEventListener('click', () => saveCurrentPreset(preset.index));
+      row.querySelector('[data-apply-preset]').addEventListener('click', () => {
+        applyPreset(preset.index).catch((error) => setPresetStatus(error.message || String(error), true));
+      });
+      row.querySelector('[data-save-preset]').addEventListener('click', () => {
+        saveCurrentPreset(preset.index).catch((error) => setPresetStatus(error.message || String(error), true));
+      });
       list.appendChild(row);
     });
   };
@@ -56,7 +60,14 @@ async function loadPresetPanel() {
     setPresetStatus('预设名称和热键已保存');
   };
 
+  // 页面可挂载此钩子：在保存/切换预设前先把页面上的当前配置写入后端，
+  // 否则预设快照里存的是后端的旧值，页面改动会丢失。
+  const flushPageConfig = async () => {
+    if (typeof window.onBeforePresetSave === 'function') await window.onBeforePresetSave();
+  };
+
   const saveCurrentPreset = async (index) => {
+    await flushPageConfig();
     const res = await fetch(`/api/presets/${index}/save`, {method: 'POST'});
     const data = await res.json();
     if (!data.ok) throw new Error(data.error || '保存当前设置到预设失败');
@@ -65,6 +76,7 @@ async function loadPresetPanel() {
   };
 
   const applyPreset = async (index) => {
+    await flushPageConfig();
     const res = await fetch(`/api/presets/${index}/apply`, {method: 'POST'});
     const data = await res.json();
     if (!data.ok) throw new Error(data.error || '切换预设失败');

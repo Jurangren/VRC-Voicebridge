@@ -3,7 +3,9 @@ from __future__ import annotations
 import json
 import hashlib
 import hmac
+import re
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
 from collections.abc import Callable
@@ -19,6 +21,7 @@ def translate_text(text: str, config: AppConfig) -> str:
         "microsoft": _translate_with_microsoft,
         "tencent": _translate_with_tencent,
         "baidu": _translate_with_baidu,
+        "local_llm": _translate_with_local_llm,
     }
     translate = providers.get(config.translation_provider, _translate_with_google)
     attempts = max(1, int(config.translation_retry_count) + 1)
@@ -46,6 +49,100 @@ def _translate_with_google(text: str, config: AppConfig) -> str:
 
     if not translated:
         raise AppError("谷歌翻译失败：返回内容为空")
+    return translated
+
+
+_LANGUAGE_NAMES = {
+    "zh-cn": "简体中文",
+    "zh-hans": "简体中文",
+    "zh-tw": "繁体中文",
+    "zh-hant": "繁体中文",
+    "zh": "简体中文",
+    "ja": "日语",
+    "en": "英语",
+    "ko": "韩语",
+    "ru": "俄语",
+    "fr": "法语",
+    "de": "德语",
+    "es": "西班牙语",
+}
+
+_THINK_TAG_RE = re.compile(r"<think>.*?</think>", re.DOTALL)
+
+
+def _language_name(code: str) -> str:
+    return _LANGUAGE_NAMES.get(code.strip().lower(), code.strip())
+
+
+def _translate_with_local_llm(text: str, config: AppConfig) -> str:
+    """本地 LLM 翻译。
+
+    端点不带 /v1 时走 Ollama 原生 /api/chat（能用 think=false 关闭思考模式，速度快）；
+    带 /v1 时走 OpenAI 兼容 /chat/completions（LM Studio / llama.cpp server 等）。
+    """
+    endpoint = config.local_llm_endpoint.strip().rstrip("/") or "http://127.0.0.1:11434"
+    model = config.local_llm_model.strip()
+    if not model:
+        raise AppError("本地 LLM 翻译失败：请先在设置中填写模型名（如 qwen3.5:4b）")
+
+    source = config.source_language.strip()
+    source_name = "" if source.lower() == "auto" else _language_name(source)
+    template = config.local_llm_prompt.strip() or (
+        "你是翻译引擎。把用户发来的{source}内容翻译成{target}。"
+        "只输出译文本身，不要解释、不要注音、不要重复原文。保持口语化、自然，符合日常对话语气。"
+    )
+    instruction = template.replace("{source}", source_name).replace("{target}", _language_name(config.target_language))
+
+    messages = [
+        {"role": "system", "content": instruction},
+        {"role": "user", "content": text},
+    ]
+    use_openai_api = endpoint.endswith("/v1")
+    if use_openai_api:
+        # OpenAI 兼容接口无法可靠关闭思考模式，用 Qwen 的 /no_think 软开关兜底
+        messages[0]["content"] += "/no_think"
+        url = f"{endpoint}/chat/completions"
+        body = {"model": model, "messages": messages, "temperature": 0.2, "stream": False}
+    else:
+        url = f"{endpoint}/api/chat"
+        body = {
+            "model": model,
+            "messages": messages,
+            "think": False,
+            "stream": False,
+            "keep_alive": "30m",  # 避免 Ollama 闲置 5 分钟就卸载模型，下次翻译又要等加载
+            "options": {"temperature": 0.2},
+        }
+
+    headers = {"Content-Type": "application/json"}
+    if config.local_llm_api_key.strip():
+        headers["Authorization"] = f"Bearer {config.local_llm_api_key.strip()}"
+
+    payload = json.dumps(body, ensure_ascii=False).encode("utf-8")
+    request = urllib.request.Request(url, data=payload, headers=headers, method="POST")
+    timeout = max(5, int(config.local_llm_timeout_seconds))
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            result = json.loads(response.read().decode("utf-8"))
+    except urllib.error.URLError as exc:
+        raise AppError(
+            f"本地 LLM 翻译失败：无法连接 {endpoint}（{exc.reason}）。"
+            "请确认本地 LLM 服务已启动（如 Ollama），且模型已下载（如 ollama pull qwen3.5:4b）。"
+        ) from exc
+    except Exception as exc:
+        raise AppError(f"本地 LLM 翻译失败：{exc}") from exc
+
+    try:
+        if use_openai_api:
+            content = result["choices"][0]["message"]["content"]
+        else:
+            content = result["message"]["content"]
+    except (KeyError, IndexError, TypeError) as exc:
+        raise AppError(f"本地 LLM 翻译失败：返回格式异常：{result}") from exc
+
+    translated = _THINK_TAG_RE.sub("", str(content)).strip()
+    if not translated:
+        raise AppError("本地 LLM 翻译失败：返回内容为空")
     return translated
 
 

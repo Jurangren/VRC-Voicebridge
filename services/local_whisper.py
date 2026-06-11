@@ -17,10 +17,36 @@ _MODEL_NAME = ""
 _DLL_DIRECTORY_HANDLES = []
 
 
-def recognize_with_local_whisper_gpu(audio: sr.AudioData, config: AppConfig) -> str:
+def ensure_local_whisper_model(config: AppConfig) -> None:
+    """预加载模型（实时管线启动时调用，避免第一句话才开始加载）。"""
+    model_name = config.speech_translate_local_whisper_model.strip() or "large-v3-turbo"
+    _get_model(model_name)
+
+
+def transcribe_samples_with_local_whisper(samples, config: AppConfig) -> str:
+    """直接对 16kHz float32 numpy 音频做转写，不经过临时 WAV 文件。"""
+    import numpy as np
+
     model_name = config.speech_translate_local_whisper_model.strip() or "large-v3-turbo"
     model = _get_model(model_name)
     language = (config.speech_translate_recognition_language or config.speech_translate_source_language).split("-")[0]
+    segments, _info = model.transcribe(
+        np.asarray(samples, dtype=np.float32).reshape(-1),
+        language=language or None,
+        vad_filter=False,
+        beam_size=5,
+        temperature=0.0,
+        condition_on_previous_text=False,
+    )
+    return "".join(segment.text for segment in segments).strip()
+
+
+def recognize_with_local_whisper_gpu(audio: sr.AudioData, config: AppConfig) -> str:
+    model_name = config.speech_translate_local_whisper_model.strip() or "large-v3-turbo"
+    model = _get_model(model_name)
+    # 此函数服务于麦克风输入路径（按键录音/VAD 监听/旧输出采集），识别语言取 listen_language；
+    # 旧的输出采集端点会把 listen_language 覆盖为实时翻译源语言，因此两条路径都正确。
+    language = (config.listen_language or config.speech_translate_recognition_language).split("-")[0]
     wav_data = audio.get_wav_data(convert_rate=16000, convert_width=2)
 
     temp_path: Path | None = None
@@ -60,7 +86,11 @@ def _get_model(model_name: str):
 
     try:
         _add_nvidia_dll_directories()
-        _MODEL = WhisperModel(model_name, device="cuda", compute_type="float16")
+        try:
+            # 本地缓存已有模型时强制离线加载，跳过 Hugging Face 的联网版本检查/重新下载
+            _MODEL = WhisperModel(model_name, device="cuda", compute_type="float16", local_files_only=True)
+        except Exception:
+            _MODEL = WhisperModel(model_name, device="cuda", compute_type="float16")
         _MODEL_NAME = model_name
         return _MODEL
     except Exception as exc:

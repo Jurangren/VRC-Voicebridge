@@ -1,18 +1,22 @@
 const outputDeviceSelect = document.getElementById('outputDeviceSelect');
-const chunkSeconds = document.getElementById('chunkSeconds');
-const energyThreshold = document.getElementById('energyThreshold');
+const vadThreshold = document.getElementById('vadThreshold');
 const silenceMs = document.getElementById('silenceMs');
-const overlayTextSeconds = document.getElementById('overlayTextSeconds');
-const overlayTextAlpha = document.getElementById('overlayTextAlpha');
-const overlayPositionHotkey = document.getElementById('overlayPositionHotkey');
-const recognitionProvider = document.getElementById('recognitionProvider');
-const recognitionLanguage = document.getElementById('recognitionLanguage');
-const tencentAsrEngineModelType = document.getElementById('tencentAsrEngineModelType');
+const minSpeechMs = document.getElementById('minSpeechMs');
+const chunkSeconds = document.getElementById('chunkSeconds');
+const speakerEnabled = document.getElementById('speakerEnabled');
+const speakerSimilarity = document.getElementById('speakerSimilarity');
+const maxSpeakers = document.getElementById('maxSpeakers');
+const speakerModelPath = document.getElementById('speakerModelPath');
 const localWhisperModel = document.getElementById('localWhisperModel');
 const sourceLanguage = document.getElementById('sourceLanguage');
 const targetLanguage = document.getElementById('targetLanguage');
 const translationProvider = document.getElementById('translationProvider');
-const refreshOutputsButton = document.getElementById('refreshOutputsButton');
+const oscEnabled = document.getElementById('oscEnabled');
+const oscFormat = document.getElementById('oscFormat');
+const oscUserHoldSeconds = document.getElementById('oscUserHoldSeconds');
+const overlayTextSeconds = document.getElementById('overlayTextSeconds');
+const overlayTextAlpha = document.getElementById('overlayTextAlpha');
+const refreshDevicesButton = document.getElementById('refreshDevicesButton');
 const saveConfigButton = document.getElementById('saveConfigButton');
 const startButton = document.getElementById('startButton');
 const stopButton = document.getElementById('stopButton');
@@ -21,26 +25,56 @@ const transcriptView = document.getElementById('transcript');
 const translationView = document.getElementById('translation');
 const historyView = document.getElementById('history');
 const statusView = document.getElementById('status');
+const statusPill = document.getElementById('statusPill');
+const vadMeterFill = document.getElementById('vadMeterFill');
+
+const SPEAKER_COLORS = ['#4f8cff', '#f59e0b', '#34d399', '#f472b6', '#a78bfa', '#22d3ee', '#fb7185', '#a3e635'];
 
 let running = false;
-let lastOriginal = '';
-let recentOriginals = [];
+let lastEventId = 0;
 let history = loadHistory();
 let activePresetIndex = null;
 let presetPollTimer = null;
 
-function setStatus(message, isError = false) {
-  statusView.textContent = message;
-  statusView.classList.toggle('error-text', isError);
+function speakerLetter(index) {
+  let letters = '';
+  while (index > 0) {
+    const remainder = (index - 1) % 26;
+    letters = String.fromCharCode(65 + remainder) + letters;
+    index = Math.floor((index - 1) / 26);
+  }
+  return letters;
 }
 
-async function refreshOutputDevices() {
-  const res = await fetch('/api/output-capture/devices');
+function speakerColor(index) {
+  return SPEAKER_COLORS[(index - 1) % SPEAKER_COLORS.length];
+}
+
+function speakerBadge(index) {
+  const badge = document.createElement('span');
+  badge.className = 'spk-badge';
+  badge.style.setProperty('--spk', speakerColor(index));
+  badge.textContent = speakerLetter(index);
+  return badge;
+}
+
+function setStatus(message, isError = false, state = null) {
+  statusView.textContent = message;
+  statusView.classList.toggle('error-text', isError);
+  if (state !== null) statusPill.dataset.state = state;
+}
+
+function setVadMeter(probability) {
+  vadMeterFill.style.width = `${Math.round(Math.min(Math.max(probability || 0, 0), 1) * 100)}%`;
+}
+
+async function refreshDevices() {
+  const res = await fetch('/api/speech-translate/devices');
   const data = await res.json();
-  if (!Array.isArray(data)) throw new Error(data.error || '输出设备列表格式异常');
+  if (!data.outputs) throw new Error(data.error || '设备列表格式异常');
   const current = outputDeviceSelect.value;
   outputDeviceSelect.innerHTML = '<option value="">系统默认输出设备</option>';
-  data.forEach((device) => {
+  data.outputs.forEach((device) => {
     const option = document.createElement('option');
     option.value = device.id;
     option.textContent = `#${device.index} ${device.name}`;
@@ -53,17 +87,22 @@ async function refreshOutputDevices() {
 function collectConfigPayload() {
   const sourceLanguageValue = sourceLanguage.value.trim();
   return {
+    audio_source: 'output',
     output_device_id: outputDeviceSelect.value,
-    chunk_seconds: Number(chunkSeconds.value || 8),
-    energy_threshold: Number(energyThreshold.value || 0.01),
+    vad_threshold: Number(vadThreshold.value || 0.5),
     silence_ms: Number(silenceMs.value || 900),
+    min_speech_ms: Number(minSpeechMs.value || 300),
+    chunk_seconds: Number(chunkSeconds.value || 8),
+    speaker_enabled: speakerEnabled.checked,
+    speaker_similarity: Number(speakerSimilarity.value || 0.6),
+    max_speakers: Number(maxSpeakers.value || 6),
+    speaker_model_path: speakerModelPath.value.trim(),
+    local_whisper_model: localWhisperModel.value.trim(),
+    osc_enabled: oscEnabled.checked,
+    osc_format: oscFormat.value.trim() || '{translated}',
+    osc_user_hold_seconds: Number(oscUserHoldSeconds.value || 10),
     overlay_text_seconds: Number(overlayTextSeconds.value || 6),
     overlay_text_alpha: Number(overlayTextAlpha.value || 0.78),
-    overlay_position_hotkey: overlayPositionHotkey.value.trim(),
-    recognition_provider: recognitionProvider.value,
-    recognition_language: sourceLanguageValue,
-    tencent_asr_engine_model_type: tencentAsrEngineModelType.value.trim(),
-    local_whisper_model: localWhisperModel.value.trim(),
     provider: translationProvider.value,
     source_language: sourceLanguageValue,
     target_language: targetLanguage.value.trim(),
@@ -73,22 +112,29 @@ function collectConfigPayload() {
 async function loadSavedConfig() {
   const res = await fetch('/api/speech-translate/config');
   const config = await res.json();
-  chunkSeconds.value = config.chunk_seconds ?? chunkSeconds.value;
-  energyThreshold.value = config.energy_threshold ?? energyThreshold.value;
+  vadThreshold.value = config.vad_threshold ?? vadThreshold.value;
   silenceMs.value = config.silence_ms ?? silenceMs.value;
-  overlayTextSeconds.value = config.overlay_text_seconds ?? overlayTextSeconds.value;
-  overlayTextAlpha.value = config.overlay_text_alpha ?? overlayTextAlpha.value;
-  overlayPositionHotkey.value = config.overlay_position_hotkey ?? overlayPositionHotkey.value;
-  recognitionProvider.value = config.recognition_provider ?? recognitionProvider.value;
-  recognitionLanguage.value = config.source_language ?? config.recognition_language ?? recognitionLanguage.value;
-  tencentAsrEngineModelType.value = config.tencent_asr_engine_model_type ?? tencentAsrEngineModelType.value;
+  minSpeechMs.value = config.min_speech_ms ?? minSpeechMs.value;
+  chunkSeconds.value = config.chunk_seconds ?? chunkSeconds.value;
+  speakerEnabled.checked = config.speaker_enabled ?? speakerEnabled.checked;
+  speakerSimilarity.value = config.speaker_similarity ?? speakerSimilarity.value;
+  maxSpeakers.value = config.max_speakers ?? maxSpeakers.value;
+  speakerModelPath.value = config.speaker_model_path ?? speakerModelPath.value;
   localWhisperModel.value = config.local_whisper_model ?? localWhisperModel.value;
   sourceLanguage.value = config.source_language ?? sourceLanguage.value;
   targetLanguage.value = config.target_language ?? targetLanguage.value;
   translationProvider.value = config.provider ?? translationProvider.value;
-  await refreshOutputDevices();
+  oscEnabled.checked = config.osc_enabled ?? oscEnabled.checked;
+  oscFormat.value = config.osc_format ?? oscFormat.value;
+  oscUserHoldSeconds.value = config.osc_user_hold_seconds ?? oscUserHoldSeconds.value;
+  overlayTextSeconds.value = config.overlay_text_seconds ?? overlayTextSeconds.value;
+  overlayTextAlpha.value = config.overlay_text_alpha ?? overlayTextAlpha.value;
+  await refreshDevices();
   if (config.output_device_id) outputDeviceSelect.value = config.output_device_id;
 }
+
+// 保存/切换预设前，先把页面上的当前配置写入后端，确保预设快照拿到的是最新值
+window.onBeforePresetSave = () => saveConfig();
 
 window.onPresetApplied = async () => {
   await loadSavedConfig();
@@ -135,66 +181,97 @@ async function saveConfig() {
   setStatus('实时语音翻译配置已保存');
 }
 
-async function setCaptureEnabled(enabled) {
-  await fetch('/api/output-capture/enabled', {
-    method: 'POST',
-    headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({enabled}),
-  });
+function setLiveCard(view, speaker, text) {
+  view.innerHTML = '';
+  if (speaker) view.appendChild(speakerBadge(speaker));
+  view.appendChild(document.createTextNode(text));
+  view.classList.remove('muted');
 }
 
-async function captureTranslateLoop() {
+function renderEvent(event) {
+  setLiveCard(transcriptView, event.speaker, event.original);
+  if (event.translated) {
+    setLiveCard(translationView, event.speaker, event.translated);
+  } else if (event.error) {
+    setLiveCard(translationView, event.speaker, `翻译失败：${event.error}`);
+  }
+  addHistory(event);
+}
+
+function describeStatus(status) {
+  if (!status.running) {
+    return status.stage === 'error' ? `出错：${status.message}` : status.message || '已停止';
+  }
+  if (status.stage === 'loading') return status.message || '正在加载模型...';
+  const parts = [];
+  parts.push(status.speaking ? '检测到说话中...' : (status.message || '正在监听'));
+  if (status.speaker_count > 0) parts.push(`已识别 ${status.speaker_count} 位说话人`);
+  if (status.queue_size > 0) parts.push(`待处理片段 ${status.queue_size}`);
+  if (status.last_error) parts.push(`最近错误：${status.last_error}`);
+  return parts.join(' · ');
+}
+
+function pillState(status) {
+  if (status.stage === 'error') return 'error';
+  if (!status.running) return 'idle';
+  if (status.stage === 'loading') return 'loading';
+  return 'running';
+}
+
+async function pollStream() {
   while (running) {
     try {
-      setStatus('正在监听输出设备音频...');
-      const res = await fetch('/api/output-capture/translate-once', {
-        method: 'POST',
-        headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({device_id: outputDeviceSelect.value, ...collectConfigPayload()}),
-      });
-      const data = await res.json().catch(() => ({}));
+      const res = await fetch(`/api/speech-translate/stream?after=${lastEventId}`);
+      const data = await res.json();
       if (!running) return;
-      if (!data.ok) {
-        if (data.silent) {
-          setStatus('未识别到可翻译的输出设备语音，继续监听...');
-          continue;
-        }
-        throw new Error(data.error || '输出设备实时翻译失败');
+      (data.events || []).forEach((event) => {
+        lastEventId = Math.max(lastEventId, event.id);
+        renderEvent(event);
+      });
+      const status = data.status || {};
+      setStatus(describeStatus(status), status.stage === 'error' || Boolean(status.last_error), pillState(status));
+      setVadMeter(status.running ? status.vad_probability : 0);
+      if (!status.running && status.stage === 'error') {
+        stopRealtime(false);
+        return;
       }
-      if (isDuplicate(data.original)) {
-        setStatus('识别到重复片段，已跳过，继续监听...');
-        continue;
-      }
-      lastOriginal = data.original;
-      rememberOriginal(data.original);
-      transcriptView.textContent = data.original;
-      transcriptView.classList.remove('muted');
-      translationView.textContent = data.translated;
-      translationView.classList.remove('muted');
-      addHistory(data);
-      setStatus('已翻译当前输出音频片段，继续监听...');
     } catch (error) {
-      setStatus(`监听/翻译失败：${error.message || error}`, true);
+      setStatus(`获取实时翻译结果失败：${error.message || error}`, true, 'error');
       await wait(1200);
     }
+    await wait(400);
   }
 }
 
-function normalizeText(text) {
-  return String(text || '').replace(/[\s\p{P}\p{S}]/gu, '').toLowerCase();
+async function startRealtime() {
+  startButton.disabled = true;
+  try {
+    const res = await fetch('/api/speech-translate/start', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(collectConfigPayload()),
+    });
+    const data = await res.json();
+    if (!data.ok) throw new Error(data.error || '启动实时翻译失败');
+    running = true;
+    stopButton.disabled = false;
+    setStatus('已启动，正在加载模型...', false, 'loading');
+    pollStream();
+  } catch (error) {
+    startButton.disabled = false;
+    setStatus(`启动失败：${error.message || error}`, true, 'error');
+  }
 }
 
-function isDuplicate(text) {
-  const normalized = normalizeText(text);
-  if (!normalized) return true;
-  return recentOriginals.some((item) => item === normalized || item.includes(normalized) || normalized.includes(item));
-}
-
-function rememberOriginal(text) {
-  const normalized = normalizeText(text);
-  if (!normalized) return;
-  recentOriginals.unshift(normalized);
-  recentOriginals = recentOriginals.slice(0, 8);
+function stopRealtime(callBackend = true) {
+  running = false;
+  startButton.disabled = false;
+  stopButton.disabled = true;
+  setVadMeter(0);
+  if (callBackend) {
+    fetch('/api/speech-translate/stop', {method: 'POST'}).catch(() => {});
+    setStatus('已停止', false, 'idle');
+  }
 }
 
 function wait(ms) {
@@ -202,7 +279,7 @@ function wait(ms) {
 }
 
 function addHistory(item) {
-  history.unshift({...item, created_at: new Date().toLocaleString()});
+  history.unshift({...item, created_at: item.created_at || new Date().toLocaleString()});
   history = history.slice(0, 100);
   localStorage.setItem('vrcVoiceBridgeOutputTranslateHistory', JSON.stringify(history));
   renderHistory();
@@ -226,60 +303,49 @@ function renderHistory() {
   history.forEach((item) => {
     const row = document.createElement('article');
     row.className = 'history-item';
-    row.innerHTML = `
-      <div class="history-meta"></div>
-      <div class="history-original"></div>
-      <div class="history-translated"></div>
-    `;
-    row.querySelector('.history-meta').textContent = `${item.created_at} · ${item.provider} · ${item.source_language} → ${item.target_language}`;
-    row.querySelector('.history-original').textContent = item.original;
-    row.querySelector('.history-translated').textContent = item.translated;
+    if (item.speaker) row.style.setProperty('--spk', speakerColor(item.speaker));
+    const meta = document.createElement('div');
+    meta.className = 'history-meta';
+    if (item.speaker) meta.appendChild(speakerBadge(item.speaker));
+    const metaText = document.createElement('span');
+    metaText.textContent = `${item.created_at} · ${item.provider} · ${item.source_language} → ${item.target_language}`;
+    meta.appendChild(metaText);
+    const original = document.createElement('div');
+    original.className = 'history-original';
+    original.textContent = item.original;
+    const translated = document.createElement('div');
+    translated.className = 'history-translated';
+    translated.textContent = item.translated || (item.error ? `翻译失败：${item.error}` : '');
+    row.append(meta, original, translated);
     historyView.appendChild(row);
   });
 }
 
-refreshOutputsButton.addEventListener('click', async () => {
+refreshDevicesButton.addEventListener('click', async () => {
   try {
-    await refreshOutputDevices();
+    await refreshDevices();
   } catch (error) {
-    setStatus(`刷新输出设备失败：${error.message || error}`, true);
+    setStatus(`刷新音频设备失败：${error.message || error}`, true);
   }
 });
 
-saveConfigButton.addEventListener('click', async () => {
-  try {
-    await saveConfig();
-  } catch (error) {
-    setStatus(`保存配置失败：${error.message || error}`, true);
-  }
+document.querySelectorAll('#saveConfigButton, .save-config-inline').forEach((button) => {
+  button.addEventListener('click', async () => {
+    try {
+      await saveConfig();
+    } catch (error) {
+      setStatus(`保存配置失败：${error.message || error}`, true);
+    }
+  });
 });
 
-startButton.addEventListener('click', () => {
-  running = true;
-  lastOriginal = '';
-  recentOriginals = [];
-  startButton.disabled = true;
-  stopButton.disabled = false;
-  setCaptureEnabled(true).catch(() => {});
-  captureTranslateLoop();
-});
-
-stopButton.addEventListener('click', () => {
-  running = false;
-  startButton.disabled = false;
-  stopButton.disabled = true;
-  setCaptureEnabled(false).catch(() => {});
-  setStatus('已停止');
-});
+startButton.addEventListener('click', startRealtime);
+stopButton.addEventListener('click', () => stopRealtime(true));
 
 clearHistoryButton.addEventListener('click', () => {
   history = [];
   localStorage.removeItem('vrcVoiceBridgeOutputTranslateHistory');
   renderHistory();
-});
-
-sourceLanguage.addEventListener('input', () => {
-  recognitionLanguage.value = sourceLanguage.value.trim();
 });
 
 renderHistory();

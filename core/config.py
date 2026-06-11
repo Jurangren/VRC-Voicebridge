@@ -36,7 +36,6 @@ class AppConfig:
     hotkey: str = "b"
     input_hotkey: str = "b"
     microphone_hotkey: str = "v"
-    speech_translate_overlay_position_hotkey: str = "ctrl+alt+t"
     preset_next_hotkey: str = "ctrl+alt+0"
     active_preset_index: int = 1
     preset_names: list[str] = field(default_factory=_default_preset_names)
@@ -60,6 +59,14 @@ class AppConfig:
     baidu_translator_app_id: str = ""
     baidu_translator_secret_key: str = ""
     baidu_translator_endpoint: str = "https://fanyi-api.baidu.com/api/trans/vip/translate"
+    local_llm_endpoint: str = "http://127.0.0.1:11434"
+    local_llm_model: str = "qwen3.5:4b"
+    local_llm_api_key: str = ""
+    local_llm_timeout_seconds: int = 30
+    local_llm_prompt: str = (
+        "你是翻译引擎。把用户发来的{source}内容翻译成{target}。"
+        "只输出译文本身，不要解释、不要注音、不要重复原文。保持口语化、自然，符合日常对话语气。"
+    )
 
     overlay_alpha: float = 0.92
 
@@ -87,10 +94,22 @@ class AppConfig:
     listen_phrase_time_limit: int = 8
     listen_confirm_timeout_seconds: int = 3
     listen_language: str = "zh-CN"
+    mic_vad_mode: bool = False
+    mic_vad_device_id: str = ""
+    mic_vad_threshold: float = 0.5
+    mic_vad_silence_ms: int = 600
     speech_translate_output_device_id: str = ""
+    speech_translate_audio_source: str = "output"
+    speech_translate_mic_device_id: str = ""
     speech_translate_chunk_seconds: float = 8.0
     speech_translate_energy_threshold: float = 0.01
     speech_translate_silence_ms: int = 900
+    speech_translate_vad_threshold: float = 0.5
+    speech_translate_min_speech_ms: int = 300
+    speech_translate_speaker_enabled: bool = True
+    speech_translate_speaker_similarity: float = 0.6
+    speech_translate_max_speakers: int = 6
+    speech_translate_speaker_model_path: str = ""
     speech_translate_recognition_provider: str = "google"
     speech_translate_recognition_language: str = "ja"
     speech_translate_source_language: str = "ja"
@@ -100,6 +119,9 @@ class AppConfig:
     speech_translate_local_whisper_model: str = "large-v3-turbo"
     speech_translate_overlay_text_seconds: float = 6.0
     speech_translate_overlay_text_alpha: float = 0.78
+    speech_translate_osc_enabled: bool = False
+    speech_translate_osc_format: str = "{translated}"
+    speech_translate_osc_user_hold_seconds: float = 10.0
     tencent_asr_secret_id: str = ""
     tencent_asr_secret_key: str = ""
     tencent_asr_region: str = "ap-guangzhou"
@@ -151,7 +173,8 @@ class ConfigManager:
         current = asdict(self.get())
         for key in current:
             if key not in data:
-                if key in _bool_fields():
+                # 主设置页表单不包含 speech_translate_* 开关，缺失时不要把它们重置为 False
+                if key in _bool_fields() and not key.startswith("speech_translate_"):
                     current[key] = False
                 continue
             current[key] = _coerce_value(key, data[key])
@@ -243,14 +266,19 @@ class ConfigManager:
 
 
 def _bool_fields() -> set[str]:
-    return {"osc_chat_enter", "osc_chat_notify", "play_to_speaker"}
+    return {
+        "osc_chat_enter", "osc_chat_notify", "play_to_speaker",
+        "speech_translate_speaker_enabled", "speech_translate_osc_enabled", "mic_vad_mode",
+    }
 
 
 def _int_fields() -> set[str]:
     return {
         "web_port", "osc_port", "translation_retry_count", "tts_retry_count", "tts_timeout_seconds",
         "audio_chunk_size", "listen_mic_device_index", "listen_energy_threshold", "listen_phrase_time_limit",
-        "listen_confirm_timeout_seconds", "speech_translate_silence_ms", "tencent_asr_filter_dirty",
+        "listen_confirm_timeout_seconds", "local_llm_timeout_seconds",
+        "mic_vad_silence_ms", "speech_translate_silence_ms", "speech_translate_min_speech_ms",
+        "speech_translate_max_speakers", "tencent_asr_filter_dirty",
         "tencent_asr_filter_modal", "tencent_asr_filter_punc", "active_preset_index",
     }
 
@@ -258,14 +286,16 @@ def _int_fields() -> set[str]:
 def _float_fields() -> set[str]:
     return {
         "overlay_alpha", "speaker_volume", "speech_translate_chunk_seconds", "speech_translate_energy_threshold",
+        "mic_vad_threshold", "speech_translate_vad_threshold", "speech_translate_speaker_similarity",
         "speech_translate_overlay_text_seconds", "speech_translate_overlay_text_alpha",
+        "speech_translate_osc_user_hold_seconds",
     }
 
 
 def _coerce_value(key: str, value: Any) -> Any:
     if key in _bool_fields():
         return str(value).lower() in {"1", "true", "on", "yes"}
-    if key == "bubble_format":
+    if key in {"bubble_format", "speech_translate_osc_format", "local_llm_prompt"}:
         return str(value).strip().replace("\\n", "\n")
     if key in _int_fields():
         return int(value)
@@ -279,6 +309,8 @@ def _coerce_value(key: str, value: Any) -> Any:
             return min(max(number, 0.0001), 1.0)
         if key == "speech_translate_overlay_text_seconds":
             return min(max(number, 1.0), 30.0)
+        if key == "speech_translate_osc_user_hold_seconds":
+            return min(max(number, 0.0), 120.0)
         return min(max(number, 0.1), 1.0)
     if key in {"preset_names", "preset_hotkeys", "preset_snapshots"}:
         return value
