@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import difflib
 import queue
+import re
 import sys
 import threading
 import time
@@ -21,6 +23,15 @@ from services.vad import SAMPLE_RATE, WINDOW_SAMPLES, StreamingSileroVad, VadSeg
 
 _EVENT_HISTORY_LIMIT = 200
 _SEGMENT_QUEUE_LIMIT = 8
+_DEDUP_HISTORY_LIMIT = 8
+_DEDUP_WINDOW_SECONDS = 8.0
+_DEDUP_SIMILARITY = 0.85
+
+_PUNCTUATION_PATTERN = re.compile(r"[\s。，、！？．,.!?…~～\-—:：;；'\"“”‘’()（）\[\]【】]+")
+
+
+def _normalize_for_dedup(text: str) -> str:
+    return _PUNCTUATION_PATTERN.sub("", text).lower()
 
 # 与前端 speech_translate.js 的 SPEAKER_COLORS 保持一致
 SPEAKER_COLORS = ["#4f8cff", "#f59e0b", "#34d399", "#f472b6", "#a78bfa", "#22d3ee", "#fb7185", "#a3e635"]
@@ -64,8 +75,7 @@ class RealtimeTranslatePipeline:
         self._indicator = None
         self._embedder: SpeakerEmbedder | None = None
         self._clusterer = OnlineSpeakerClusterer()
-        self._last_text = ""
-        self._last_text_at = 0.0
+        self._recent_texts: deque[tuple[str, float]] = deque(maxlen=_DEDUP_HISTORY_LIMIT)
         self._status: dict = {"running": False, "stage": "idle", "message": "未启动"}
 
     # ---------- 对外接口 ----------
@@ -81,8 +91,7 @@ class RealtimeTranslatePipeline:
                 similarity_threshold=config.speech_translate_speaker_similarity,
                 max_speakers=config.speech_translate_max_speakers,
             )
-            self._last_text = ""
-            self._last_text_at = 0.0
+            self._recent_texts.clear()
             self._status = {
                 "running": True,
                 "stage": "loading",
@@ -137,6 +146,20 @@ class RealtimeTranslatePipeline:
             self._event_id += 1
             event["id"] = self._event_id
             self._events.append(event)
+
+    def _is_duplicate_text(self, text: str, now: float) -> bool:
+        """近似去重：与时间窗内的近期转写做相似度比较，挡住标点/个别字差异的重复。"""
+        normalized = _normalize_for_dedup(text)
+        if not normalized:
+            return True
+        for prev_text, prev_at in self._recent_texts:
+            if now - prev_at > _DEDUP_WINDOW_SECONDS:
+                continue
+            if normalized == prev_text:
+                return True
+            if difflib.SequenceMatcher(None, normalized, prev_text).ratio() >= _DEDUP_SIMILARITY:
+                return True
+        return False
 
     # ---------- 采集线程：音频 -> VAD -> 片段队列 ----------
 
@@ -261,10 +284,9 @@ class RealtimeTranslatePipeline:
         if not original:
             return
         now = time.monotonic()
-        if original == self._last_text and now - self._last_text_at < 5.0:
-            return  # 过滤 Whisper 对静音/重复片段的幻觉式重复输出
-        self._last_text = original
-        self._last_text_at = now
+        if self._is_duplicate_text(original, now):
+            return  # 过滤 Whisper 对静音/切碎片段的幻觉式重复输出
+        self._recent_texts.append((_normalize_for_dedup(original), now))
 
         translated = ""
         translate_error = ""

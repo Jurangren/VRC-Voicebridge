@@ -37,8 +37,21 @@ def transcribe_samples_with_local_whisper(samples, config: AppConfig) -> str:
         beam_size=5,
         temperature=0.0,
         condition_on_previous_text=False,
+        repetition_penalty=1.1,
+        no_repeat_ngram_size=3,
     )
-    return "".join(segment.text for segment in segments).strip()
+    texts = []
+    for segment in segments:
+        # 只用单一 temperature 时 faster-whisper 没有回退重试，质量差的段会原样保留，
+        # 需要自行丢弃疑似幻觉段：近乎静音、置信度极低或内部高度重复（高压缩比）
+        if segment.no_speech_prob > 0.85:
+            continue
+        if segment.avg_logprob < -1.2:
+            continue
+        if segment.compression_ratio > 2.4:
+            continue
+        texts.append(segment.text)
+    return "".join(texts).strip()
 
 
 def recognize_with_local_whisper_gpu(audio: sr.AudioData, config: AppConfig) -> str:
