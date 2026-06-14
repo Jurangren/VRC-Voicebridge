@@ -117,11 +117,13 @@ class AppConfig:
     speech_translate_translation_provider: str = "google"
     speech_translate_tencent_asr_engine_model_type: str = "16k_ja"
     speech_translate_local_whisper_model: str = "large-v3-turbo"
+    speech_translate_hotwords: str = ""
     speech_translate_overlay_text_seconds: float = 6.0
     speech_translate_overlay_text_alpha: float = 0.78
     speech_translate_osc_enabled: bool = False
     speech_translate_osc_format: str = "{translated}"
     speech_translate_osc_user_hold_seconds: float = 10.0
+    speech_translate_osc_toggle_hotkey: str = ""
     tencent_asr_secret_id: str = ""
     tencent_asr_secret_key: str = ""
     tencent_asr_region: str = "ap-guangzhou"

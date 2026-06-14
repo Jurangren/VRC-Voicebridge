@@ -8,12 +8,14 @@ const speakerSimilarity = document.getElementById('speakerSimilarity');
 const maxSpeakers = document.getElementById('maxSpeakers');
 const speakerModelPath = document.getElementById('speakerModelPath');
 const localWhisperModel = document.getElementById('localWhisperModel');
+const hotwordsInput = document.getElementById('hotwords');
 const sourceLanguage = document.getElementById('sourceLanguage');
 const targetLanguage = document.getElementById('targetLanguage');
 const translationProvider = document.getElementById('translationProvider');
 const oscEnabled = document.getElementById('oscEnabled');
 const oscFormat = document.getElementById('oscFormat');
 const oscUserHoldSeconds = document.getElementById('oscUserHoldSeconds');
+const oscToggleHotkey = document.getElementById('oscToggleHotkey');
 const overlayTextSeconds = document.getElementById('overlayTextSeconds');
 const overlayTextAlpha = document.getElementById('overlayTextAlpha');
 const refreshDevicesButton = document.getElementById('refreshDevicesButton');
@@ -98,9 +100,11 @@ function collectConfigPayload() {
     max_speakers: Number(maxSpeakers.value || 6),
     speaker_model_path: speakerModelPath.value.trim(),
     local_whisper_model: localWhisperModel.value.trim(),
+    hotwords: hotwordsInput.value.trim(),
     osc_enabled: oscEnabled.checked,
     osc_format: oscFormat.value.trim() || '{translated}',
     osc_user_hold_seconds: Number(oscUserHoldSeconds.value || 10),
+    osc_toggle_hotkey: oscToggleHotkey.value.trim(),
     overlay_text_seconds: Number(overlayTextSeconds.value || 6),
     overlay_text_alpha: Number(overlayTextAlpha.value || 0.78),
     provider: translationProvider.value,
@@ -121,12 +125,14 @@ async function loadSavedConfig() {
   maxSpeakers.value = config.max_speakers ?? maxSpeakers.value;
   speakerModelPath.value = config.speaker_model_path ?? speakerModelPath.value;
   localWhisperModel.value = config.local_whisper_model ?? localWhisperModel.value;
+  hotwordsInput.value = config.hotwords ?? hotwordsInput.value;
   sourceLanguage.value = config.source_language ?? sourceLanguage.value;
   targetLanguage.value = config.target_language ?? targetLanguage.value;
   translationProvider.value = config.provider ?? translationProvider.value;
   oscEnabled.checked = config.osc_enabled ?? oscEnabled.checked;
   oscFormat.value = config.osc_format ?? oscFormat.value;
   oscUserHoldSeconds.value = config.osc_user_hold_seconds ?? oscUserHoldSeconds.value;
+  oscToggleHotkey.value = config.osc_toggle_hotkey ?? oscToggleHotkey.value;
   overlayTextSeconds.value = config.overlay_text_seconds ?? overlayTextSeconds.value;
   overlayTextAlpha.value = config.overlay_text_alpha ?? overlayTextAlpha.value;
   await refreshDevices();

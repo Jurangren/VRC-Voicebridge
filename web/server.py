@@ -257,12 +257,11 @@ def create_web_app(config_manager: ConfigManager, error_handler: ErrorHandler, s
             if audio_source not in {"microphone", "output"}:
                 return jsonify({"ok": False, "error": f"不支持的音频来源：{audio_source}"}), 400
 
+            # 只写 speech_translate_* 字段；映射到 translation_provider/source/target 等
+            # 通用字段由 PIPELINE.start -> build_realtime_runtime_config 统一完成
             runtime_config = replace(
                 config,
-                translation_provider=provider,
-                source_language=source_language,
-                target_language=target_language,
-                speech_translate_recognition_language=source_language,
+                speech_translate_translation_provider=provider,
                 speech_translate_source_language=source_language,
                 speech_translate_target_language=target_language,
                 speech_translate_audio_source=audio_source,
@@ -282,6 +281,7 @@ def create_web_app(config_manager: ConfigManager, error_handler: ErrorHandler, s
                 ).strip(),
                 speech_translate_local_whisper_model=str(payload.get("local_whisper_model", "")).strip()
                 or config.speech_translate_local_whisper_model,
+                speech_translate_hotwords=str(payload.get("hotwords", config.speech_translate_hotwords)).strip(),
                 speech_translate_osc_enabled=bool(payload.get("osc_enabled", config.speech_translate_osc_enabled)),
                 speech_translate_osc_format=str(
                     payload.get("osc_format", config.speech_translate_osc_format)
@@ -332,10 +332,12 @@ def create_web_app(config_manager: ConfigManager, error_handler: ErrorHandler, s
                 "osc_enabled": config.speech_translate_osc_enabled,
                 "osc_format": config.speech_translate_osc_format.replace("\n", "\\n"),
                 "osc_user_hold_seconds": config.speech_translate_osc_user_hold_seconds,
+                "osc_toggle_hotkey": config.speech_translate_osc_toggle_hotkey,
                 "recognition_provider": config.speech_translate_recognition_provider,
                 "recognition_language": config.speech_translate_source_language,
                 "tencent_asr_engine_model_type": config.speech_translate_tencent_asr_engine_model_type,
                 "local_whisper_model": config.speech_translate_local_whisper_model,
+                "hotwords": config.speech_translate_hotwords,
                 "source_language": config.speech_translate_source_language,
                 "target_language": config.speech_translate_target_language,
                 "provider": config.speech_translate_translation_provider,
@@ -364,12 +366,14 @@ def create_web_app(config_manager: ConfigManager, error_handler: ErrorHandler, s
                     "speech_translate_osc_enabled": bool(payload.get("osc_enabled", False)),
                     "speech_translate_osc_format": str(payload.get("osc_format", "{translated}")),
                     "speech_translate_osc_user_hold_seconds": payload.get("osc_user_hold_seconds", 10),
+                    "speech_translate_osc_toggle_hotkey": str(payload.get("osc_toggle_hotkey", "")).strip(),
                     "speech_translate_recognition_provider": str(payload.get("recognition_provider", "")).strip(),
                     "speech_translate_recognition_language": str(payload.get("source_language", "")).strip(),
                     "speech_translate_tencent_asr_engine_model_type": str(
                         payload.get("tencent_asr_engine_model_type", "")
                     ).strip(),
                     "speech_translate_local_whisper_model": str(payload.get("local_whisper_model", "")).strip(),
+                    "speech_translate_hotwords": str(payload.get("hotwords", "")).strip(),
                     "speech_translate_source_language": str(payload.get("source_language", "")).strip(),
                     "speech_translate_target_language": str(payload.get("target_language", "")).strip(),
                     "speech_translate_translation_provider": str(payload.get("provider", "")).strip(),

@@ -8,6 +8,7 @@ import threading
 import time
 import warnings
 from collections import deque
+from dataclasses import replace
 from datetime import datetime
 
 import numpy as np
@@ -50,6 +51,22 @@ def speaker_letter(index: int) -> str:
     return letters
 
 
+def build_realtime_runtime_config(config: AppConfig) -> AppConfig:
+    """把实时翻译专用的 speech_translate_* 配置映射到管线与翻译模块读取的通用字段。
+
+    管线内部 translate_text() 读 translation_provider/source_language/target_language，
+    本地 Whisper 读 speech_translate_recognition_language；这些都从 speech_translate_*
+    前缀字段派生，集中在此映射，保证 web 启动与预设切换重启走同一套规则。
+    """
+    return replace(
+        config,
+        translation_provider=config.speech_translate_translation_provider,
+        source_language=config.speech_translate_source_language,
+        target_language=config.speech_translate_target_language,
+        speech_translate_recognition_language=config.speech_translate_source_language,
+    )
+
+
 def list_microphone_devices() -> list[dict]:
     devices: list[dict] = []
     for index, microphone in enumerate(sc.all_microphones()):
@@ -76,11 +93,13 @@ class RealtimeTranslatePipeline:
         self._embedder: SpeakerEmbedder | None = None
         self._clusterer = OnlineSpeakerClusterer()
         self._recent_texts: deque[tuple[str, float]] = deque(maxlen=_DEDUP_HISTORY_LIMIT)
+        self._osc_enabled = False
         self._status: dict = {"running": False, "stage": "idle", "message": "未启动"}
 
     # ---------- 对外接口 ----------
 
     def start(self, config: AppConfig, indicator=None) -> None:
+        config = build_realtime_runtime_config(config)
         with self._lock:
             self.stop()
             self._config = config
@@ -92,10 +111,12 @@ class RealtimeTranslatePipeline:
                 max_speakers=config.speech_translate_max_speakers,
             )
             self._recent_texts.clear()
+            self._osc_enabled = bool(config.speech_translate_osc_enabled)
             self._status = {
                 "running": True,
                 "stage": "loading",
                 "message": "正在加载模型...",
+                "osc_enabled": self._osc_enabled,
                 "speaking": False,
                 "rms": 0.0,
                 "vad_probability": 0.0,
@@ -119,6 +140,17 @@ class RealtimeTranslatePipeline:
             thread.join(timeout=5)
         with self._lock:
             self._status.update({"running": False, "stage": "idle", "message": "已停止", "speaking": False})
+
+    def set_osc_enabled(self, enabled: bool) -> None:
+        with self._lock:
+            self._osc_enabled = bool(enabled)
+            self._status["osc_enabled"] = self._osc_enabled
+
+    def toggle_osc_enabled(self) -> bool:
+        with self._lock:
+            self._osc_enabled = not self._osc_enabled
+            self._status["osc_enabled"] = self._osc_enabled
+            return self._osc_enabled
 
     def status(self) -> dict:
         with self._lock:
@@ -297,7 +329,8 @@ class RealtimeTranslatePipeline:
             self._set_status(last_error=f"翻译失败：{exc}")
 
         label = speaker_letter(speaker) if speaker else ""
-        if translated and config.speech_translate_osc_enabled:
+        # 聊天框开关读运行时标志而非启动时的配置快照，热键可随时切换
+        if translated and self._osc_enabled:
             try:
                 message = (
                     config.speech_translate_osc_format

@@ -15,6 +15,7 @@ from core.errors import AppError
 _MODEL = None
 _MODEL_NAME = ""
 _DLL_DIRECTORY_HANDLES = []
+_ADDED_DLL_DIRS: set[str] = set()
 
 
 def ensure_local_whisper_model(config: AppConfig) -> None:
@@ -30,20 +31,22 @@ def transcribe_samples_with_local_whisper(samples, config: AppConfig) -> str:
     model_name = config.speech_translate_local_whisper_model.strip() or "large-v3-turbo"
     model = _get_model(model_name)
     language = (config.speech_translate_recognition_language or config.speech_translate_source_language).split("-")[0]
+    hotwords = config.speech_translate_hotwords.strip()
     segments, _info = model.transcribe(
         np.asarray(samples, dtype=np.float32).reshape(-1),
         language=language or None,
         vad_filter=False,
         beam_size=5,
-        temperature=0.0,
+        temperature=[0.0, 0.2, 0.4],
         condition_on_previous_text=False,
         repetition_penalty=1.1,
         no_repeat_ngram_size=3,
+        hotwords=hotwords or None,
     )
     texts = []
     for segment in segments:
-        # 只用单一 temperature 时 faster-whisper 没有回退重试，质量差的段会原样保留，
-        # 需要自行丢弃疑似幻觉段：近乎静音、置信度极低或内部高度重复（高压缩比）
+        # 温度回退也救不回的段最终仍会原样保留，自行丢弃疑似幻觉段：
+        # 近乎静音、置信度极低或内部高度重复（高压缩比）
         if segment.no_speech_prob > 0.85:
             continue
         if segment.avg_logprob < -1.2:
@@ -72,7 +75,8 @@ def recognize_with_local_whisper_gpu(audio: sr.AudioData, config: AppConfig) -> 
             language=language or None,
             vad_filter=False,
             beam_size=5,
-            temperature=0.0,
+            temperature=[0.0, 0.2, 0.4],
+            hotwords=config.speech_translate_hotwords.strip() or None,
         )
         text = "".join(segment.text for segment in segments).strip()
     finally:
@@ -148,9 +152,16 @@ def _add_nvidia_dll_directories() -> None:
             ]
         )
     for path in candidates:
-        if path.exists():
-            path_text = str(path)
-            if path_text not in os.environ.get("PATH", ""):
-                os.environ["PATH"] = path_text + os.pathsep + os.environ.get("PATH", "")
+        path_text = str(path)
+        # 幂等：同一目录只注册一次。本服务常驻，管线每次启停/切预设都会调用本函数，
+        # 若不去重则句柄无限累加，约 360 个后 os.add_dll_directory 会抛 WinError 206。
+        if path_text in _ADDED_DLL_DIRS or not path.exists():
+            continue
+        if path_text not in os.environ.get("PATH", ""):
+            os.environ["PATH"] = path_text + os.pathsep + os.environ.get("PATH", "")
+        try:
             handle = os.add_dll_directory(path_text)
-            _DLL_DIRECTORY_HANDLES.append(handle)
+        except OSError:
+            continue
+        _DLL_DIRECTORY_HANDLES.append(handle)
+        _ADDED_DLL_DIRS.add(path_text)

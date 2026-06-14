@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import tkinter as tk
+import threading
 import time
 import webbrowser
 
@@ -51,6 +52,7 @@ class Application:
         self.input_hotkey_manager = HotkeyManager(self.show_input)
         self.microphone_hotkey_manager = HotkeyManager(self.on_microphone_hotkey_press)
         self.preset_next_hotkey_manager = HotkeyManager(self.switch_next_preset)
+        self.osc_toggle_hotkey_manager = HotkeyManager(self.toggle_listen_osc)
         self.preset_hotkey_managers = [HotkeyManager(lambda index=index: self.switch_preset(index)) for index in range(1, PRESET_COUNT + 1)]
         self.tray = TrayApp(self.config_manager, self.show_input, self.quit)
         self._typing_job: str | None = None
@@ -140,6 +142,7 @@ class Application:
         self.input_hotkey_manager.unregister()
         self.microphone_hotkey_manager.unregister()
         self.preset_next_hotkey_manager.unregister()
+        self.osc_toggle_hotkey_manager.unregister()
         for manager in self.preset_hotkey_managers:
             manager.unregister()
         self.stop_microphone_listener()
@@ -148,6 +151,24 @@ class Application:
         self.reload_hotkey()
         self.reload_microphone_hotkey()
         self.reload_preset_hotkeys()
+        self.reload_osc_toggle_hotkey()
+        self.reload_realtime_pipeline()
+
+    def reload_realtime_pipeline(self) -> None:
+        """切换预设/配置后，若实时翻译正在运行则用新配置热重启，
+        立即换上新的识别/翻译模型与参数（模型未变时命中缓存，几乎无停顿）。"""
+        if not PIPELINE.status().get("running"):
+            return
+        config = self.config_manager.get()
+
+        def _restart() -> None:
+            try:
+                PIPELINE.start(config, indicator=self.speech_indicator)
+            except Exception as exc:
+                self.error_handler.report("切换配置后重启实时翻译失败", exc)
+
+        # 放后台线程，避免 stop() 等待旧线程退出时阻塞 tkinter 主线程
+        threading.Thread(target=_restart, daemon=True).start()
 
     def switch_next_preset(self) -> None:
         self.root.after(0, self._switch_next_preset)
@@ -185,6 +206,27 @@ class Application:
                     self.preset_hotkey_managers[index - 1].register(hotkey)
         except Exception as exc:
             self.error_handler.report("预设切换热键注册失败", exc)
+
+    def reload_osc_toggle_hotkey(self) -> None:
+        try:
+            config = self.config_manager.get()
+            hotkey = config.speech_translate_osc_toggle_hotkey.strip()
+            if hotkey:
+                self.osc_toggle_hotkey_manager.register(hotkey)
+        except Exception as exc:
+            self.error_handler.report("聊天框翻译显示热键注册失败", exc)
+
+    def toggle_listen_osc(self) -> None:
+        self.root.after(0, self._toggle_listen_osc)
+
+    def _toggle_listen_osc(self) -> None:
+        # 管线运行中以其运行时开关为准（启动时可能被页面参数覆盖过），未运行时翻转配置值
+        if PIPELINE.status().get("running"):
+            enabled = PIPELINE.toggle_osc_enabled()
+        else:
+            enabled = not self.config_manager.get().speech_translate_osc_enabled
+        self.config_manager.patch_from_dict({"speech_translate_osc_enabled": enabled})
+        self.speech_indicator.show_toast(f"聊天框翻译显示：{'已开启' if enabled else '已关闭'}")
 
     def reload_microphone_hotkey(self) -> None:
         try:
@@ -334,6 +376,7 @@ class Application:
         self.input_hotkey_manager.unregister()
         self.microphone_hotkey_manager.unregister()
         self.preset_next_hotkey_manager.unregister()
+        self.osc_toggle_hotkey_manager.unregister()
         for manager in self.preset_hotkey_managers:
             manager.unregister()
         self.tray.stop()

@@ -5,9 +5,27 @@
   "microphone_hotkey": "v",
   "preset_next_hotkey": "ctrl+alt+0",
   "active_preset_index": 1,
-  "preset_names": ["预设 1", "预设 2", "预设 3", "预设 4", "预设 5"],
-  "preset_hotkeys": ["ctrl+alt+1", "ctrl+alt+2", "ctrl+alt+3", "ctrl+alt+4", "ctrl+alt+5"],
-  "preset_snapshots": [{}, {}, {}, {}, {}],
+  "preset_names": [
+    "预设 1",
+    "预设 2",
+    "预设 3",
+    "预设 4",
+    "预设 5"
+  ],
+  "preset_hotkeys": [
+    "ctrl+alt+1",
+    "ctrl+alt+2",
+    "ctrl+alt+3",
+    "ctrl+alt+4",
+    "ctrl+alt+5"
+  ],
+  "preset_snapshots": [
+    {},
+    {},
+    {},
+    {},
+    {}
+  ],
   "web_host": "127.0.0.1",
   "web_port": 8765,
   "translation_provider": "google",
@@ -91,5 +109,7 @@
   "tencent_asr_filter_punc": 0,
   "play_to_speaker": true,
   "speaker_volume": 1.0,
-  "audio_chunk_size": 1024
+  "audio_chunk_size": 1024,
+  "speech_translate_hotwords": "",
+  "speech_translate_osc_toggle_hotkey": ""
 }

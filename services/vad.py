@@ -64,7 +64,9 @@ class VadSegmenter:
 
     状态机仿照 Silero get_speech_timestamps：概率高于 threshold 触发语音，
     低于 neg_threshold 开始累计静音，静音超过 min_silence_ms 结束片段；
-    片段前后各保留 speech_pad_ms 的余量，超过 max_speech_seconds 强制切分。
+    片段前后各保留 speech_pad_ms 的余量。超过 max_speech_seconds 后优先等一个
+    split_silence_ms 的短停顿再切分，避免在词中间硬切伤害识别准确度；
+    迟迟等不到停顿则在 1.5 倍 max_speech_seconds 处强制切分兜底。
     """
 
     def __init__(
@@ -75,6 +77,7 @@ class VadSegmenter:
         min_silence_ms: int = 900,
         speech_pad_ms: int = 240,
         max_speech_seconds: float = 8.0,
+        split_silence_ms: int = 200,
     ):
         self._vad = vad
         self.threshold = min(max(float(threshold), 0.05), 0.95)
@@ -83,6 +86,8 @@ class VadSegmenter:
         self._min_silence_windows = max(1, int(min_silence_ms / _WINDOW_MS))
         self._pad_windows = max(1, int(speech_pad_ms / _WINDOW_MS))
         self._max_windows = max(self._min_speech_windows + 1, int(max_speech_seconds * 1000 / _WINDOW_MS))
+        self._split_silence_windows = max(1, int(split_silence_ms / _WINDOW_MS))
+        self._hard_max_windows = int(self._max_windows * 1.5)
         self._pre_buffer: deque[np.ndarray] = deque(maxlen=self._pad_windows)
         self._segment: list[np.ndarray] = []
         self._silence_windows = 0
@@ -132,8 +137,11 @@ class VadSegmenter:
             self._segment = []
             self._silence_windows = 0
             self._voiced_windows = 0
-        elif len(self._segment) >= self._max_windows:
-            # 说话太长，强制切分，保持触发状态继续收集后续语音
+        elif len(self._segment) >= self._max_windows and (
+            self._silence_windows >= self._split_silence_windows
+            or len(self._segment) >= self._hard_max_windows
+        ):
+            # 说话太长，在短停顿处切分（或到硬上限强制切），保持触发状态继续收集后续语音
             completed.append(np.concatenate(self._segment))
             self._segment = []
             self._voiced_windows = 1
