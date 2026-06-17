@@ -34,6 +34,7 @@ class MicrophoneListener:
         self._capture_thread: threading.Thread | None = None
         self._capture_lock = threading.Lock()
         self._is_capturing = False
+        self._cancel_event = threading.Event()
 
     def start(self) -> None:
         self._stop_event.clear()
@@ -48,12 +49,23 @@ class MicrophoneListener:
                 return False
             self._is_capturing = True
             self._capture_stop_event.clear()
+            self._cancel_event.clear()
             self._capture_thread = threading.Thread(target=self._capture_once, daemon=True)
             self._capture_thread.start()
             return True
 
     def stop_capture(self) -> None:
         self._capture_stop_event.set()
+
+    def request_cancel(self) -> bool:
+        """录音/识别进行中时请求取消：停止录音并丢弃本次识别结果。
+        返回 True 表示确有进行中的操作被取消，False 表示当前空闲。"""
+        with self._capture_lock:
+            if not self._is_capturing:
+                return False
+            self._cancel_event.set()
+            self._capture_stop_event.set()
+            return True
 
     def _capture_once(self) -> None:
         recognizer = sr.Recognizer()
@@ -74,11 +86,13 @@ class MicrophoneListener:
                 while not self._capture_stop_event.is_set() and time.monotonic() < deadline:
                     frames.append(source.stream.read(source.CHUNK))
 
-            if not frames or self._stop_event.is_set():
+            if not frames or self._stop_event.is_set() or self._cancel_event.is_set():
                 return
 
             audio = sr.AudioData(b"".join(frames), sample_rate, sample_width)
             text = recognize_speech(audio, recognizer, self.config).strip()
+            if self._cancel_event.is_set():
+                return  # 识别过程中用户已按热键取消，丢弃结果
             if text:
                 recognized = True
                 self.text_callback(text)
@@ -89,10 +103,13 @@ class MicrophoneListener:
         except Exception as exc:
             self.error_callback(AppError(f"麦克风按键录音失败：{exc}"))
         finally:
+            cancelled = self._cancel_event.is_set()
             with self._capture_lock:
                 self._is_capturing = False
                 self._capture_stop_event.clear()
-            if self.finish_callback is not None:
+                self._cancel_event.clear()
+            # 取消时不回调 finish：避免覆盖“已取消”提示、也不弹“未识别到语音”
+            if self.finish_callback is not None and not cancelled:
                 self.finish_callback(recognized)
 
 

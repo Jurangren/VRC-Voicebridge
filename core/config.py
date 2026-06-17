@@ -124,6 +124,9 @@ class AppConfig:
     speech_translate_osc_format: str = "{translated}"
     speech_translate_osc_user_hold_seconds: float = 10.0
     speech_translate_osc_toggle_hotkey: str = ""
+    speech_translate_toggle_hotkey: str = "ctrl+alt+f9"        # 开/关实时翻译
+    speech_translate_overlay_enabled: bool = True              # overlay 字幕显示开关
+    speech_translate_overlay_toggle_hotkey: str = "ctrl+alt+f10"  # 开/关 overlay 翻译字幕显示
     tencent_asr_secret_id: str = ""
     tencent_asr_secret_key: str = ""
     tencent_asr_region: str = "ap-guangzhou"
@@ -271,6 +274,7 @@ def _bool_fields() -> set[str]:
     return {
         "osc_chat_enter", "osc_chat_notify", "play_to_speaker",
         "speech_translate_speaker_enabled", "speech_translate_osc_enabled", "mic_vad_mode",
+        "speech_translate_overlay_enabled",
     }
 
 

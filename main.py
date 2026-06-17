@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import signal
+import sys
 import tkinter as tk
 import threading
 import time
@@ -24,15 +26,26 @@ from services.realtime_pipeline import PIPELINE
 class Application:
     TYPING_REFRESH_MS = 1500
 
-    def __init__(self):
+    def __init__(self, vr_mode: bool = False):
         self.root = tk.Tk()
         self.root.withdraw()
         self.root.title("VRC VoiceBridge")
 
         self.config_manager = ConfigManager()
         self.error_handler = ErrorHandler(self.root)
-        self.status_overlay = StatusOverlay(self.root, self.config_manager)
-        self.speech_indicator = SpeechIndicator(self.root, self._speech_capture_status)
+        self.vr_mode = vr_mode
+        self.vr_ui = None
+        if vr_mode:
+            # VR 模式：所有显示类浮窗（字幕/指示器/状态/toast）改在 SteamVR overlay 显示，
+            # 桌面不再绘制；输入框仍走桌面（交互式，需实体键盘）。一个对象同时承担两者角色。
+            from ui.vr_overlay import VROverlayUI
+
+            self.vr_ui = VROverlayUI(self.root, self._speech_capture_status, self.config_manager)
+            self.status_overlay = self.vr_ui
+            self.speech_indicator = self.vr_ui
+        else:
+            self.status_overlay = StatusOverlay(self.root, self.config_manager)
+            self.speech_indicator = SpeechIndicator(self.root, self._speech_capture_status)
         self.pipeline = AppPipeline(
             self.config_manager,
             self.error_handler,
@@ -53,6 +66,8 @@ class Application:
         self.microphone_hotkey_manager = HotkeyManager(self.on_microphone_hotkey_press)
         self.preset_next_hotkey_manager = HotkeyManager(self.switch_next_preset)
         self.osc_toggle_hotkey_manager = HotkeyManager(self.toggle_listen_osc)
+        self.realtime_toggle_hotkey_manager = HotkeyManager(self.toggle_realtime_translate)
+        self.overlay_toggle_hotkey_manager = HotkeyManager(self.toggle_overlay_display)
         self.preset_hotkey_managers = [HotkeyManager(lambda index=index: self.switch_preset(index)) for index in range(1, PRESET_COUNT + 1)]
         self.tray = TrayApp(self.config_manager, self.show_input, self.quit)
         self._typing_job: str | None = None
@@ -63,6 +78,7 @@ class Application:
         self._pending_mic_job: str | None = None
         self._pending_mic_countdown_seconds = 0
         self._mic_press_cancelled_pipeline = False
+        self._quitting = False
 
     def _speech_capture_status(self) -> dict:
         """返回双说话指示器状态：translate=实时翻译听到的声音（蓝），mic=自己麦克风 VAD（绿）。"""
@@ -92,7 +108,25 @@ class Application:
         self.tray.start()
         self.reload_runtime_mode()
         webbrowser.open(f"http://{config.web_host}:{config.web_port}/")
+        # 让 Ctrl+C / 终止信号能中断 tkinter mainloop：装信号处理 + 周期性唤醒解释器
+        signal.signal(signal.SIGINT, self._handle_signal)
+        try:
+            signal.signal(signal.SIGTERM, self._handle_signal)
+        except (ValueError, AttributeError):
+            pass
+        self._keep_alive()
         self.root.mainloop()
+
+    def _handle_signal(self, *_args) -> None:
+        # tkinter mainloop 不会自行响应信号，这里把退出投递到主线程做干净关闭
+        print("\n收到退出信号，正在关闭…")
+        self.root.after(0, self.quit)
+
+    def _keep_alive(self) -> None:
+        # 周期性回到 Python 解释器，给信号处理函数执行机会（否则 Tk 会一直阻塞在 C 层收不到信号）
+        if self._quitting:
+            return
+        self.root.after(200, self._keep_alive)
 
     def show_input(self) -> None:
         self.root.after(0, self.toggle_input)
@@ -143,6 +177,8 @@ class Application:
         self.microphone_hotkey_manager.unregister()
         self.preset_next_hotkey_manager.unregister()
         self.osc_toggle_hotkey_manager.unregister()
+        self.realtime_toggle_hotkey_manager.unregister()
+        self.overlay_toggle_hotkey_manager.unregister()
         for manager in self.preset_hotkey_managers:
             manager.unregister()
         self.stop_microphone_listener()
@@ -152,6 +188,8 @@ class Application:
         self.reload_microphone_hotkey()
         self.reload_preset_hotkeys()
         self.reload_osc_toggle_hotkey()
+        self.reload_realtime_toggle_hotkey()
+        self.reload_overlay_toggle_hotkey()
         self.reload_realtime_pipeline()
 
     def reload_realtime_pipeline(self) -> None:
@@ -228,6 +266,59 @@ class Application:
         self.config_manager.patch_from_dict({"speech_translate_osc_enabled": enabled})
         self.speech_indicator.show_toast(f"聊天框翻译显示：{'已开启' if enabled else '已关闭'}")
 
+    def reload_realtime_toggle_hotkey(self) -> None:
+        try:
+            hotkey = self.config_manager.get().speech_translate_toggle_hotkey.strip()
+            if hotkey:
+                self.realtime_toggle_hotkey_manager.register(hotkey)
+        except Exception as exc:
+            self.error_handler.report("实时翻译开关热键注册失败", exc)
+
+    def toggle_realtime_translate(self) -> None:
+        self.root.after(0, self._toggle_realtime_translate)
+
+    def _toggle_realtime_translate(self) -> None:
+        # 启停均放后台线程：start() 内部会先 stop() 并 join 旧线程，可能阻塞 tkinter 主线程
+        if PIPELINE.status().get("running"):
+            self.speech_indicator.show_toast("实时翻译：已关闭")
+            threading.Thread(target=self._stop_realtime_translate, daemon=True).start()
+        else:
+            config = self.config_manager.get()
+            self.speech_indicator.show_toast("实时翻译：正在启动…")
+            threading.Thread(target=lambda: self._start_realtime_translate(config), daemon=True).start()
+
+    def _start_realtime_translate(self, config) -> None:
+        try:
+            PIPELINE.start(config, indicator=self.speech_indicator)
+        except Exception as exc:
+            self.error_handler.report("启动实时翻译失败", exc)
+
+    def _stop_realtime_translate(self) -> None:
+        try:
+            PIPELINE.stop()
+        except Exception as exc:
+            self.error_handler.report("停止实时翻译失败", exc)
+
+    def reload_overlay_toggle_hotkey(self) -> None:
+        try:
+            hotkey = self.config_manager.get().speech_translate_overlay_toggle_hotkey.strip()
+            if hotkey:
+                self.overlay_toggle_hotkey_manager.register(hotkey)
+        except Exception as exc:
+            self.error_handler.report("翻译字幕显示开关热键注册失败", exc)
+
+    def toggle_overlay_display(self) -> None:
+        self.root.after(0, self._toggle_overlay_display)
+
+    def _toggle_overlay_display(self) -> None:
+        # 管线运行中以其运行时开关为准，未运行时翻转配置值
+        if PIPELINE.status().get("running"):
+            enabled = PIPELINE.toggle_overlay_enabled()
+        else:
+            enabled = not self.config_manager.get().speech_translate_overlay_enabled
+        self.config_manager.patch_from_dict({"speech_translate_overlay_enabled": enabled})
+        self.speech_indicator.show_toast(f"翻译字幕显示：{'已开启' if enabled else '已关闭'}")
+
     def reload_microphone_hotkey(self) -> None:
         try:
             config = self.config_manager.get()
@@ -269,6 +360,14 @@ class Application:
             self.hide_typing_bubble()
             self._clear_pending_microphone_text()
             self.status_overlay.show_cancelled("已取消当前 TTS 操作", hide_after_ms=2200)
+            return
+        # 语音识别进行中再按热键 -> 取消本次识别（丢弃结果）
+        listener = self.mic_listener
+        if isinstance(listener, MicrophoneListener) and listener.request_cancel():
+            self._mic_press_cancelled_pipeline = True  # 抑制随后配对的 release 动作
+            self.hide_typing_bubble()
+            self._clear_pending_microphone_text()
+            self.status_overlay.show_cancelled("已取消语音识别", hide_after_ms=2000)
             return
         if self._pending_mic_text:
             text = self._pending_mic_text
@@ -369,6 +468,9 @@ class Application:
         return text
 
     def quit(self) -> None:
+        if self._quitting:
+            return
+        self._quitting = True
         self.hide_typing_bubble()
         PIPELINE.stop()
         self.stop_microphone_listener()
@@ -377,11 +479,23 @@ class Application:
         self.microphone_hotkey_manager.unregister()
         self.preset_next_hotkey_manager.unregister()
         self.osc_toggle_hotkey_manager.unregister()
+        self.realtime_toggle_hotkey_manager.unregister()
+        self.overlay_toggle_hotkey_manager.unregister()
         for manager in self.preset_hotkey_managers:
             manager.unregister()
+        if self.vr_ui is not None:
+            self.vr_ui.shutdown()
         self.tray.stop()
         self.root.after(0, self.root.destroy)
 
 
 if __name__ == "__main__":
-    Application().start()
+    vr_mode = "--vr" in sys.argv[1:]
+    try:
+        Application(vr_mode=vr_mode).start()
+    except Exception as exc:
+        # VR 模式下 SteamVR 未启动等情况会在此抛出，给出清晰提示而非堆栈
+        print(f"启动失败：{exc}")
+        if vr_mode:
+            print("提示：--vr 模式需要先启动 SteamVR。")
+        sys.exit(1)
