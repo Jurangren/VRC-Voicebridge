@@ -38,8 +38,8 @@ BINDINGS = [
 CHORDS = [
     # 左 Y + 扳机 -> 开/关实时翻译（speech_translate_toggle_hotkey = ctrl+alt+f9）
     {"buttons": [("left", "Y"), ("left", "trigger")], "keys": "ctrl+alt+f9"},
-    # 左 Y + 握把 -> 开/关头顶字幕显示（speech_translate_overlay_toggle_hotkey = ctrl+alt+f10）
-    {"buttons": [("left", "Y"), ("left", "grip")], "keys": "ctrl+alt+f10"},
+    # 左 Y + 握把 -> 开/关 VRChat 聊天框翻译显示（OSC，speech_translate_osc_toggle_hotkey = ctrl+alt+o）
+    {"buttons": [("left", "Y"), ("left", "grip")], "keys": "ctrl+alt+o"},
     # 左 Y + 右扳机 -> 切换配置 1（preset_hotkeys[0] = ctrl+alt+1）
     {"buttons": [("left", "Y"), ("right", "trigger")], "keys": "ctrl+alt+1"},
     # 左 Y + 右握把 -> 切换配置 2（preset_hotkeys[1] = ctrl+alt+2）
@@ -153,8 +153,7 @@ def main() -> int:
                 if all_down and not chord_active.get(ci):
                     keyboard.send(chord["keys"])
                     chord_active[ci] = True
-                    if args.debug:
-                        print(f"  -> chord {chord['keys']}")
+                    print(f"  -> chord {chord['keys']}")
                 elif not all_down:
                     chord_active[ci] = False
                 if all_down:
@@ -176,18 +175,15 @@ def main() -> int:
                 if b["mode"] == "press":
                     if down and not was:
                         keyboard.send(b["keys"])
-                        if args.debug:
-                            print(f"  -> press {b['keys']}")
+                        print(f"  -> press {b['keys']}")
                 elif b["mode"] == "hold":
                     if down and not was:
                         keyboard.press(b["keys"])
                         held_keys[key] = b["keys"]
-                        if args.debug:
-                            print(f"  -> hold down {b['keys']}")
+                        print(f"  -> hold down {b['keys']}")
                     elif not down and was and held_keys.get(key):
                         keyboard.release(held_keys.pop(key))
-                        if args.debug:
-                            print(f"  -> hold up {b['keys']}")
+                        print(f"  -> hold up {b['keys']}")
                 prev[key] = down
 
             time.sleep(period)

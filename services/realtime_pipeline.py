@@ -94,7 +94,6 @@ class RealtimeTranslatePipeline:
         self._clusterer = OnlineSpeakerClusterer()
         self._recent_texts: deque[tuple[str, float]] = deque(maxlen=_DEDUP_HISTORY_LIMIT)
         self._osc_enabled = False
-        self._overlay_enabled = True
         self._status: dict = {"running": False, "stage": "idle", "message": "未启动"}
 
     # ---------- 对外接口 ----------
@@ -113,13 +112,11 @@ class RealtimeTranslatePipeline:
             )
             self._recent_texts.clear()
             self._osc_enabled = bool(config.speech_translate_osc_enabled)
-            self._overlay_enabled = bool(config.speech_translate_overlay_enabled)
             self._status = {
                 "running": True,
                 "stage": "loading",
                 "message": "正在加载模型...",
                 "osc_enabled": self._osc_enabled,
-                "overlay_enabled": self._overlay_enabled,
                 "speaking": False,
                 "rms": 0.0,
                 "vad_probability": 0.0,
@@ -154,17 +151,6 @@ class RealtimeTranslatePipeline:
             self._osc_enabled = not self._osc_enabled
             self._status["osc_enabled"] = self._osc_enabled
             return self._osc_enabled
-
-    def set_overlay_enabled(self, enabled: bool) -> None:
-        with self._lock:
-            self._overlay_enabled = bool(enabled)
-            self._status["overlay_enabled"] = self._overlay_enabled
-
-    def toggle_overlay_enabled(self) -> bool:
-        with self._lock:
-            self._overlay_enabled = not self._overlay_enabled
-            self._status["overlay_enabled"] = self._overlay_enabled
-            return self._overlay_enabled
 
     def status(self) -> dict:
         with self._lock:
@@ -359,8 +345,7 @@ class RealtimeTranslatePipeline:
                     )
             except Exception as exc:
                 self._set_status(last_error=f"收听翻译聊天框显示失败：{exc}")
-        # overlay 字幕显示同样读运行时标志，热键可随时切换
-        if translated and self._indicator is not None and self._overlay_enabled:
+        if translated and self._indicator is not None:
             try:
                 self._indicator.show_text(
                     translated,

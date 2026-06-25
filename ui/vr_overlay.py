@@ -75,11 +75,12 @@ class VRSession:
 
     def poll_events(self) -> None:
         # 排空 OpenVR overlay 事件队列。SteamVR 会持续往队列推事件（焦点进出、仪表盘开关、
-        # 鼠标、系统事件等）；若从不消费，队列无限堆积，跑一段时间后 overlay 会被卡住、不再刷新——
-        # 这正是“只有 VR 模式、用一阵才卡死”的根因。每帧排空即可。
+        # 鼠标、系统事件等）；若从不消费，队列无限堆积，跑一段时间后 overlay 会被卡住、不再刷新。
+        # 注意：pyopenvr 的 pollNextOverlayEvent 返回 (result, event) 元组而非 bool——
+        # 非空元组恒为真，直接 while 它会死循环卡死主线程，必须取 [0] 判断队列是否还有事件。
         event = self._openvr.VREvent_t()
         try:
-            while self._overlay.pollNextOverlayEvent(self._handle, event):
+            while self._overlay.pollNextOverlayEvent(self._handle, event)[0]:
                 pass
         except Exception:
             pass

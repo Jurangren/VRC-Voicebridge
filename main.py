@@ -67,7 +67,6 @@ class Application:
         self.preset_next_hotkey_manager = HotkeyManager(self.switch_next_preset)
         self.osc_toggle_hotkey_manager = HotkeyManager(self.toggle_listen_osc)
         self.realtime_toggle_hotkey_manager = HotkeyManager(self.toggle_realtime_translate)
-        self.overlay_toggle_hotkey_manager = HotkeyManager(self.toggle_overlay_display)
         self.preset_hotkey_managers = [HotkeyManager(lambda index=index: self.switch_preset(index)) for index in range(1, PRESET_COUNT + 1)]
         self.tray = TrayApp(self.config_manager, self.show_input, self.quit)
         self._typing_job: str | None = None
@@ -178,7 +177,6 @@ class Application:
         self.preset_next_hotkey_manager.unregister()
         self.osc_toggle_hotkey_manager.unregister()
         self.realtime_toggle_hotkey_manager.unregister()
-        self.overlay_toggle_hotkey_manager.unregister()
         for manager in self.preset_hotkey_managers:
             manager.unregister()
         self.stop_microphone_listener()
@@ -189,7 +187,6 @@ class Application:
         self.reload_preset_hotkeys()
         self.reload_osc_toggle_hotkey()
         self.reload_realtime_toggle_hotkey()
-        self.reload_overlay_toggle_hotkey()
         self.reload_realtime_pipeline()
 
     def reload_realtime_pipeline(self) -> None:
@@ -212,6 +209,7 @@ class Application:
         self.root.after(0, self._switch_next_preset)
 
     def _switch_next_preset(self) -> None:
+        print(f"[{time.strftime('%H:%M:%S')}] 热键触发：切换下一个预设")
         config = self.config_manager.apply_next_preset()
         self.reload_runtime_mode()
         self._show_preset_switched(config.active_preset_index)
@@ -220,6 +218,7 @@ class Application:
         self.root.after(0, lambda: self._switch_preset(index))
 
     def _switch_preset(self, index: int) -> None:
+        print(f"[{time.strftime('%H:%M:%S')}] 热键触发：切换预设 {index}")
         config = self.config_manager.apply_preset(index)
         self.reload_runtime_mode()
         self._show_preset_switched(config.active_preset_index)
@@ -258,6 +257,7 @@ class Application:
         self.root.after(0, self._toggle_listen_osc)
 
     def _toggle_listen_osc(self) -> None:
+        print(f"[{time.strftime('%H:%M:%S')}] 热键触发：聊天框翻译开关")
         # 管线运行中以其运行时开关为准（启动时可能被页面参数覆盖过），未运行时翻转配置值
         if PIPELINE.status().get("running"):
             enabled = PIPELINE.toggle_osc_enabled()
@@ -278,6 +278,7 @@ class Application:
         self.root.after(0, self._toggle_realtime_translate)
 
     def _toggle_realtime_translate(self) -> None:
+        print(f"[{time.strftime('%H:%M:%S')}] 热键触发：实时翻译启停")
         # 启停均放后台线程：start() 内部会先 stop() 并 join 旧线程，可能阻塞 tkinter 主线程
         if PIPELINE.status().get("running"):
             self.speech_indicator.show_toast("实时翻译：已关闭")
@@ -298,26 +299,6 @@ class Application:
             PIPELINE.stop()
         except Exception as exc:
             self.error_handler.report("停止实时翻译失败", exc)
-
-    def reload_overlay_toggle_hotkey(self) -> None:
-        try:
-            hotkey = self.config_manager.get().speech_translate_overlay_toggle_hotkey.strip()
-            if hotkey:
-                self.overlay_toggle_hotkey_manager.register(hotkey)
-        except Exception as exc:
-            self.error_handler.report("翻译字幕显示开关热键注册失败", exc)
-
-    def toggle_overlay_display(self) -> None:
-        self.root.after(0, self._toggle_overlay_display)
-
-    def _toggle_overlay_display(self) -> None:
-        # 管线运行中以其运行时开关为准，未运行时翻转配置值
-        if PIPELINE.status().get("running"):
-            enabled = PIPELINE.toggle_overlay_enabled()
-        else:
-            enabled = not self.config_manager.get().speech_translate_overlay_enabled
-        self.config_manager.patch_from_dict({"speech_translate_overlay_enabled": enabled})
-        self.speech_indicator.show_toast(f"翻译字幕显示：{'已开启' if enabled else '已关闭'}")
 
     def reload_microphone_hotkey(self) -> None:
         try:
@@ -480,7 +461,6 @@ class Application:
         self.preset_next_hotkey_manager.unregister()
         self.osc_toggle_hotkey_manager.unregister()
         self.realtime_toggle_hotkey_manager.unregister()
-        self.overlay_toggle_hotkey_manager.unregister()
         for manager in self.preset_hotkey_managers:
             manager.unregister()
         if self.vr_ui is not None:
