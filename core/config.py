@@ -125,6 +125,8 @@ class AppConfig:
     speech_translate_osc_user_hold_seconds: float = 10.0
     speech_translate_osc_toggle_hotkey: str = "ctrl+alt+o"     # 开/关 VRChat 聊天框翻译显示
     speech_translate_toggle_hotkey: str = "ctrl+alt+f9"        # 开/关实时翻译
+    image_translate_hotkey: str = "ctrl+alt+i"                 # 图片翻译：抓窗口->百度图片翻译->VR 显示
+    image_translate_window_keyword: str = "VRChat"             # 抓取的窗口标题关键字（留空则截主显示器）
     tencent_asr_secret_id: str = ""
     tencent_asr_secret_key: str = ""
     tencent_asr_region: str = "ap-guangzhou"

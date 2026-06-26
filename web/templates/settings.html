@@ -195,6 +195,15 @@
       </section>
 
       <section>
+        <h2>图片翻译</h2>
+        <div class="grid">
+          <label>图片翻译热键 <input name="image_translate_hotkey" value="{{ config.image_translate_hotkey }}"></label>
+          <label>抓取窗口关键字 <input name="image_translate_window_keyword" value="{{ config.image_translate_window_keyword }}"></label>
+        </div>
+        <p class="hint">按热键截取该窗口画面（默认 VRChat，即头显视角）提交百度图片翻译，结果图显示在 VR 中；翻译中再按取消、出图后再按关闭，仅 VR 模式可用。凭证复用上方「百度翻译配置」的 App ID/密钥，并需在百度开放平台单独开通「图片翻译」。窗口关键字留空则改为截主显示器。</p>
+      </section>
+
+      <section>
         <h2>OpenAI TTS</h2>
         <div class="grid">
           <label>API Key <input name="openai_api_key" type="password" value="{{ config.openai_api_key }}"></label>

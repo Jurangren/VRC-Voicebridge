@@ -269,3 +269,38 @@ def render_composite(state: dict) -> Image.Image | None:
         canvas.alpha_composite(tb, ((CANVAS_W - tb.width) // 2, max(ty, 0)))
 
     return canvas
+
+
+# ---------- 图片翻译 overlay（独立一块，与字幕分开） ----------
+
+def render_image_loading(phase: float) -> Image.Image:
+    """翻译中：仅旋转圆环 + 文字（不再全屏蒙版，背景透明，只在局部托一个小底）。"""
+    canvas = Image.new("RGBA", (CANVAS_W, CANVAS_H), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(canvas)
+    cx, cy = CANVAS_W // 2, CANVAS_H // 2
+    # 仅局部小底托住转圈和文字，保证任意背景下可读（不遮挡整个视野）
+    draw.rounded_rectangle([cx - 130, cy - 110, cx + 130, cy + 110], radius=24, fill=(8, 11, 18, 170))
+    r = 56
+    ring_cy = cy - 14
+    angle = (phase * 90.0) % 360.0
+    draw.arc([cx - r, ring_cy - r, cx + r, ring_cy + r], start=0, end=360, fill=(60, 78, 110, 255), width=9)
+    draw.arc([cx - r, ring_cy - r, cx + r, ring_cy + r], start=angle, end=angle + 100, fill=(120, 180, 255, 255), width=9)
+    font = _font(30)
+    text = "翻译中…"
+    tw = int(draw.textlength(text, font=font))
+    draw.text((cx - tw // 2, cy + 56), text, font=font, fill=BUBBLE_TEXT)
+    return canvas
+
+
+def render_image_panel(image: Image.Image) -> Image.Image:
+    """把译文结果图等比缩放铺到画布中央，背景半透明深色。"""
+    canvas = Image.new("RGBA", (CANVAS_W, CANVAS_H), (8, 11, 18, 220))
+    img = image.convert("RGBA")
+    max_w, max_h = CANVAS_W - 32, CANVAS_H - 32
+    scale = min(max_w / img.width, max_h / img.height)
+    new_size = (max(1, int(img.width * scale)), max(1, int(img.height * scale)))
+    img = img.resize(new_size)
+    x = (CANVAS_W - img.width) // 2
+    y = (CANVAS_H - img.height) // 2
+    canvas.alpha_composite(img, (x, y))
+    return canvas

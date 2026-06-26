@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import queue
 import signal
 import sys
 import tkinter as tk
@@ -67,6 +68,7 @@ class Application:
         self.preset_next_hotkey_manager = HotkeyManager(self.switch_next_preset)
         self.osc_toggle_hotkey_manager = HotkeyManager(self.toggle_listen_osc)
         self.realtime_toggle_hotkey_manager = HotkeyManager(self.toggle_realtime_translate)
+        self.image_translate_hotkey_manager = HotkeyManager(self.on_image_translate_hotkey)
         self.preset_hotkey_managers = [HotkeyManager(lambda index=index: self.switch_preset(index)) for index in range(1, PRESET_COUNT + 1)]
         self.tray = TrayApp(self.config_manager, self.show_input, self.quit)
         self._typing_job: str | None = None
@@ -78,6 +80,11 @@ class Application:
         self._pending_mic_countdown_seconds = 0
         self._mic_press_cancelled_pipeline = False
         self._quitting = False
+        # 图片翻译三态：idle | translating | showing；_img_seq 用于丢弃已取消/过期的后台结果
+        self._img_state = "idle"
+        self._img_seq = 0
+        # 后台翻译线程 -> 主线程的结果队列（不跨线程调 root.after，避免弄挂 tkinter）
+        self._img_queue: queue.Queue = queue.Queue()
 
     def _speech_capture_status(self) -> dict:
         """返回双说话指示器状态：translate=实时翻译听到的声音（蓝），mic=自己麦克风 VAD（绿）。"""
@@ -114,6 +121,7 @@ class Application:
         except (ValueError, AttributeError):
             pass
         self._keep_alive()
+        self._img_poll()
         self.root.mainloop()
 
     def _handle_signal(self, *_args) -> None:
@@ -177,6 +185,7 @@ class Application:
         self.preset_next_hotkey_manager.unregister()
         self.osc_toggle_hotkey_manager.unregister()
         self.realtime_toggle_hotkey_manager.unregister()
+        self.image_translate_hotkey_manager.unregister()
         for manager in self.preset_hotkey_managers:
             manager.unregister()
         self.stop_microphone_listener()
@@ -187,6 +196,7 @@ class Application:
         self.reload_preset_hotkeys()
         self.reload_osc_toggle_hotkey()
         self.reload_realtime_toggle_hotkey()
+        self.reload_image_translate_hotkey()
         self.reload_realtime_pipeline()
 
     def reload_realtime_pipeline(self) -> None:
@@ -299,6 +309,72 @@ class Application:
             PIPELINE.stop()
         except Exception as exc:
             self.error_handler.report("停止实时翻译失败", exc)
+
+    # ---------- 图片翻译 ----------
+
+    def reload_image_translate_hotkey(self) -> None:
+        try:
+            hotkey = self.config_manager.get().image_translate_hotkey.strip()
+            if hotkey:
+                self.image_translate_hotkey_manager.register(hotkey)
+        except Exception as exc:
+            self.error_handler.report("图片翻译热键注册失败", exc)
+
+    def on_image_translate_hotkey(self) -> None:
+        self.root.after(0, self._handle_image_translate_hotkey)
+
+    def _handle_image_translate_hotkey(self) -> None:
+        # 三态机：空闲->截图翻译；翻译中->直接取消（不提示）；出图后->关闭图片
+        if self.vr_ui is None:
+            self.status_overlay.show_hint("图片翻译仅在 VR 模式可用")
+            return
+        if self._img_state == "translating":
+            self._img_seq += 1            # 让后台结果作废
+            self._img_state = "idle"
+            self.vr_ui.image_hide()
+            return
+        if self._img_state == "showing":
+            self._img_state = "idle"
+            self.vr_ui.image_hide()
+            return
+        self._img_state = "translating"
+        self._img_seq += 1
+        seq = self._img_seq
+        self.vr_ui.image_show_loading()
+        threading.Thread(target=lambda: self._run_image_translate(seq), daemon=True).start()
+
+    def _run_image_translate(self, seq: int) -> None:
+        # 后台线程：截图+翻译，结果只投递到队列，绝不在此跨线程碰 tkinter
+        from services.image_translate import capture_vr_view, translate_image
+
+        try:
+            config = self.config_manager.get()
+            shot = capture_vr_view(config)
+            result = translate_image(shot, config)
+        except Exception as exc:
+            self._img_queue.put(("failed", seq, exc))
+            return
+        self._img_queue.put(("done", seq, result))
+
+    def _img_poll(self) -> None:
+        # 主线程轮询：取出后台翻译结果并应用（过期/已取消的丢弃）
+        try:
+            while True:
+                kind, seq, payload = self._img_queue.get_nowait()
+                if seq != self._img_seq or self.vr_ui is None:
+                    continue  # 已被取消或被新请求取代
+                if kind == "done":
+                    self._img_state = "showing"
+                    self.vr_ui.image_show_result(payload)
+                else:
+                    self._img_state = "idle"
+                    self.vr_ui.image_hide()
+                    self.error_handler.report("图片翻译失败", payload)
+        except queue.Empty:
+            pass
+        finally:
+            if not self._quitting:
+                self.root.after(200, self._img_poll)
 
     def reload_microphone_hotkey(self) -> None:
         try:
@@ -461,6 +537,7 @@ class Application:
         self.preset_next_hotkey_manager.unregister()
         self.osc_toggle_hotkey_manager.unregister()
         self.realtime_toggle_hotkey_manager.unregister()
+        self.image_translate_hotkey_manager.unregister()
         for manager in self.preset_hotkey_managers:
             manager.unregister()
         if self.vr_ui is not None:

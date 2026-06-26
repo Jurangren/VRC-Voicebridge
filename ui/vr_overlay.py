@@ -53,6 +53,25 @@ class VRSession:
         self._shown = False
         self._last_data: bytes | None = None
 
+        # 第二块 overlay：图片翻译（蒙版/转圈/结果图）。更大、正前方、view-locked。
+        # 创建失败不影响字幕 overlay，只是图片翻译不可用。
+        self._img_handle = None
+        self._img_shown = False
+        self._img_last_data: bytes | None = None
+        try:
+            self._img_handle = self._overlay.createOverlay("vrc.voicebridge.imgtrans", "VRC VoiceBridge Image Translate")
+            self._overlay.setOverlayWidthInMeters(self._img_handle, 1.6)
+            self._overlay.setOverlayAlpha(self._img_handle, 1.0)
+            img_matrix = openvr.HmdMatrix34_t()
+            img_matrix.m[0][0], img_matrix.m[0][1], img_matrix.m[0][2], img_matrix.m[0][3] = 1.0, 0.0, 0.0, 0.0
+            img_matrix.m[1][0], img_matrix.m[1][1], img_matrix.m[1][2], img_matrix.m[1][3] = 0.0, 1.0, 0.0, 0.0
+            img_matrix.m[2][0], img_matrix.m[2][1], img_matrix.m[2][2], img_matrix.m[2][3] = 0.0, 0.0, 1.0, -1.3
+            self._overlay.setOverlayTransformTrackedDeviceRelative(
+                self._img_handle, openvr.k_unTrackedDeviceIndex_Hmd, img_matrix
+            )
+        except Exception:
+            self._img_handle = None
+
     def submit(self, image) -> None:
         data = image.tobytes()  # PIL RGBA -> R,G,B,A 字节，与 setOverlayRaw 期望一致
         # 内容未变则跳过纹理重传：每 100ms 重传同一帧会让 SteamVR overlay 持续闪烁
@@ -73,6 +92,27 @@ class VRSession:
             self._shown = False
         self._last_data = None  # 重新显示时强制重传一次纹理
 
+    def submit_image(self, image) -> None:
+        if self._img_handle is None:
+            return
+        data = image.tobytes()
+        if data != self._img_last_data:
+            buffer = (ctypes.c_char * len(data)).from_buffer_copy(data)
+            self._overlay.setOverlayRaw(self._img_handle, buffer, image.width, image.height, 4)
+            self._img_last_data = data
+        if not self._img_shown:
+            self._overlay.showOverlay(self._img_handle)
+            self._img_shown = True
+
+    def hide_image(self) -> None:
+        if self._img_handle is not None and self._img_shown:
+            try:
+                self._overlay.hideOverlay(self._img_handle)
+            except Exception:
+                pass
+        self._img_shown = False
+        self._img_last_data = None
+
     def poll_events(self) -> None:
         # 排空 OpenVR overlay 事件队列。SteamVR 会持续往队列推事件（焦点进出、仪表盘开关、
         # 鼠标、系统事件等）；若从不消费，队列无限堆积，跑一段时间后 overlay 会被卡住、不再刷新。
@@ -82,6 +122,9 @@ class VRSession:
         try:
             while self._overlay.pollNextOverlayEvent(self._handle, event)[0]:
                 pass
+            if self._img_handle is not None:
+                while self._overlay.pollNextOverlayEvent(self._img_handle, event)[0]:
+                    pass
         except Exception:
             pass
 
@@ -107,6 +150,11 @@ class VROverlayUI:
         self._phase_counter = 0
         self._tick_job: str | None = None
         self._last_empty = False
+        # 图片翻译 overlay 状态：None | "loading" | "image"
+        self._img_mode: str | None = None
+        self._img_result = None      # PIL.Image，结果图
+        self._img_panel = None       # 已渲染好的结果面板（缓存，避免每帧重绘）
+        self._img_phase = 0.0        # 转圈动画相位
 
     # ---------- 生命周期 ----------
 
@@ -119,6 +167,7 @@ class VROverlayUI:
             self.root.after_cancel(self._tick_job)
             self._tick_job = None
         self._session.hide()
+        self._session.hide_image()
 
     def shutdown(self) -> None:
         self.stop()
@@ -146,6 +195,24 @@ class VROverlayUI:
             return
         toast = {"text": text, "expire_at": time.monotonic() + max(0.5, float(seconds)), "base_alpha": 0.95}
         self.root.after(0, lambda: setattr(self, "_toast", toast))
+
+    # ---------- 图片翻译 overlay API（由 main.py 在主线程调用）----------
+
+    def image_show_loading(self) -> None:
+        self._img_result = None
+        self._img_panel = None
+        self._img_phase = 0.0
+        self._img_mode = "loading"
+
+    def image_show_result(self, pil_image) -> None:
+        self._img_result = pil_image
+        self._img_panel = None
+        self._img_mode = "image"
+
+    def image_hide(self) -> None:
+        self._img_mode = None
+        self._img_result = None
+        self._img_panel = None
 
     # ---------- StatusOverlay API ----------
 
@@ -253,3 +320,14 @@ class VROverlayUI:
         else:
             self._session.submit(image)
             self._last_empty = False
+
+        # 图片翻译 overlay（独立一块）：翻译中转圈、完成显示结果图、否则隐藏
+        if self._img_mode == "loading":
+            self._img_phase += 0.3
+            self._session.submit_image(renderer.render_image_loading(self._img_phase))
+        elif self._img_mode == "image" and self._img_result is not None:
+            if self._img_panel is None:
+                self._img_panel = renderer.render_image_panel(self._img_result)
+            self._session.submit_image(self._img_panel)
+        else:
+            self._session.hide_image()

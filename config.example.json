@@ -112,5 +112,7 @@
   "audio_chunk_size": 1024,
   "speech_translate_hotwords": "",
   "speech_translate_osc_toggle_hotkey": "ctrl+alt+o",
-  "speech_translate_toggle_hotkey": "ctrl+alt+f9"
+  "speech_translate_toggle_hotkey": "ctrl+alt+f9",
+  "image_translate_hotkey": "ctrl+alt+i",
+  "image_translate_window_keyword": "VRChat"
 }

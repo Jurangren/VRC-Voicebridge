@@ -1,69 +1,62 @@
-"""Quest 3 / Oculus Touch 控制器 -> 键盘组合键 桥接器（SteamVR 环境）。
-
-为什么需要它：AutoHotkey 读不到 SteamVR 控制器（它走 OpenVR，不暴露为 Windows 标准手柄）。
-本脚本以 VRApplication_Background 模式接入 SteamVR，轮询左右手柄的按钮状态，在按下/松开
-时用 keyboard 库模拟出对应的键盘组合键——VRC-VoiceBridge 现有的全局热键会直接捕获这些键，
-因此无需改动主程序。可与 `python main.py --vr` 同时运行（各自独立进程）。
-
-用法：
-    pip install openvr keyboard      # 项目已含这两个依赖
-    python tools/vr_controller_bridge.py
-    （先启动 SteamVR；某些系统下 keyboard 模拟需要管理员权限运行）
-
-要改键位：编辑下方 BINDINGS / CHORDS。keys 用 keyboard 库语法，如 "b"、"ctrl+alt+0"。
-若不确定某个按钮叫什么，加 --debug 运行，按手柄按钮即可在控制台看到识别出的名字。
-"""
 from __future__ import annotations
 
 import argparse
+import ctypes
+from ctypes import wintypes
+from datetime import datetime
+from pathlib import Path
 import sys
 import time
 
 import openvr
 
+try:
+    import keyboard
+except Exception as exc:  # pragma: no cover
+    print(f"keyboard package is not installed: {exc}\nPlease run: pip install keyboard", file=sys.stderr)
+    sys.exit(1)
+
+
 # ---------------------------------------------------------------------------
-# 键位映射 —— 按需修改这里
+# Controller mappings. Edit these when you want to change VR button behavior.
 # ---------------------------------------------------------------------------
 # hand:   "left" | "right"
-# button: "A" | "B" | "grip" | "trigger" | "thumbstick"
-#         （A/B 对左手即 X/Y；Quest 物理按钮在 SteamVR 下统一识别为 A=下键 B=上键）
-# keys:   keyboard 库组合键字符串
-# mode:   "press" 按下瞬间敲一次；"hold" 按住时持续按住该键、松开时释放（用于按住录音）
+# button: "A" | "B" | "X" | "Y" | "grip" | "trigger" | "thumbstick"
+# keys:   keyboard library hotkey string, for example "b" or "ctrl+alt+0"
+# mode:   "press" sends once on button down; "hold" presses on down and releases on up.
 BINDINGS = [
-    # 左 X：按住录音讲话（push-to-talk）-> microphone_hotkey（ctrl+g）
+    # Left X: push-to-talk recording -> microphone_hotkey (ctrl+g)
     {"hand": "left", "button": "X", "keys": "ctrl+g", "mode": "hold"},
 ]
 
-# 组合动作：两个按钮同时按下时敲一次 keys
+# Chord actions: all listed buttons must be held at the same time.
 CHORDS = [
-    # 左 Y + 扳机 -> 开/关实时翻译（speech_translate_toggle_hotkey = ctrl+alt+f9）
+    # Left Y + trigger -> toggle realtime translation
     {"buttons": [("left", "Y"), ("left", "trigger")], "keys": "ctrl+alt+f9"},
-    # 左 Y + 握把 -> 开/关 VRChat 聊天框翻译显示（OSC，speech_translate_osc_toggle_hotkey = ctrl+alt+o）
+    # Left Y + grip -> toggle VRChat chatbox translation display (OSC)
     {"buttons": [("left", "Y"), ("left", "grip")], "keys": "ctrl+alt+o"},
-    # 左 Y + 右扳机 -> 切换配置 1（preset_hotkeys[0] = ctrl+alt+1）
+    # Left Y + right trigger -> switch preset 1
     {"buttons": [("left", "Y"), ("right", "trigger")], "keys": "ctrl+alt+1"},
-    # 左 Y + 右握把 -> 切换配置 2（preset_hotkeys[1] = ctrl+alt+2）
+    # Left Y + right grip -> switch preset 2
     {"buttons": [("left", "Y"), ("right", "grip")], "keys": "ctrl+alt+2"},
+    # Left B + right B -> image translation (capture VRChat window -> Baidu image translate -> show in VR)
+    {"buttons": [("left", "B"), ("right", "B")], "keys": "ctrl+alt+i"},
 ]
 
-POLL_HZ = 60          # 轮询频率
-TRIGGER_THRESHOLD = 0.6   # 扳机/握把模拟轴的判定阈值（部分手柄不发按钮位，靠模拟轴）
+POLL_HZ = 60
+TRIGGER_THRESHOLD = 0.6
+MUTEX_NAME = "Local\\VRCVoiceBridgeSteamVRControllerBridge"
 
-# ---------------------------------------------------------------------------
-# 以下一般无需改动
-# ---------------------------------------------------------------------------
-
-# OpenVR 旧版输入按钮位（对 Oculus Touch via SteamVR 的映射）
+# Legacy OpenVR button bits for Oculus Touch via SteamVR.
 BUTTON_BITS = {
-    "A": 1 << openvr.k_EButton_A,                    # 下键（右手 A）
-    "B": 1 << openvr.k_EButton_ApplicationMenu,      # 上键（右手 B）
-    "X": 1 << openvr.k_EButton_A,                    # 左手下键（物理 X，与 A 同位）
-    "Y": 1 << openvr.k_EButton_ApplicationMenu,      # 左手上键（物理 Y，与 B 同位）
+    "A": 1 << openvr.k_EButton_A,
+    "B": 1 << openvr.k_EButton_ApplicationMenu,
+    "X": 1 << openvr.k_EButton_A,
+    "Y": 1 << openvr.k_EButton_ApplicationMenu,
     "grip": 1 << openvr.k_EButton_Grip,
-    "trigger": 1 << openvr.k_EButton_SteamVR_Trigger,    # = Axis1
-    "thumbstick": 1 << openvr.k_EButton_SteamVR_Touchpad,  # = Axis0，摇杆按下
+    "trigger": 1 << openvr.k_EButton_SteamVR_Trigger,
+    "thumbstick": 1 << openvr.k_EButton_SteamVR_Touchpad,
 }
-# 模拟轴下标：握把/扳机在部分运行时只发模拟轴而不发按钮位，用阈值兜底
 AXIS_INDEX = {"trigger": 1, "grip": 2}
 
 HAND_ROLE = {
@@ -71,16 +64,55 @@ HAND_ROLE = {
     "right": openvr.TrackedControllerRole_RightHand,
 }
 
-try:
-    import keyboard
-except Exception as exc:  # pragma: no cover
-    print(f"未安装 keyboard 库：{exc}\n请先 pip install keyboard", file=sys.stderr)
-    sys.exit(1)
+
+class SingleInstance:
+    def __init__(self, name: str):
+        self.name = name
+        self._kernel32 = None
+        self._handle = None
+
+    def acquire(self) -> bool:
+        if sys.platform != "win32":
+            return True
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.CreateMutexW.argtypes = [wintypes.LPVOID, wintypes.BOOL, wintypes.LPCWSTR]
+        kernel32.CreateMutexW.restype = wintypes.HANDLE
+        kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+        kernel32.CloseHandle.restype = wintypes.BOOL
+
+        handle = kernel32.CreateMutexW(None, False, self.name)
+        if not handle:
+            raise ctypes.WinError(ctypes.get_last_error())
+        self._kernel32 = kernel32
+        self._handle = handle
+        return ctypes.get_last_error() != 183  # ERROR_ALREADY_EXISTS
+
+    def release(self) -> None:
+        if self._kernel32 is not None and self._handle:
+            self._kernel32.CloseHandle(self._handle)
+            self._handle = None
 
 
-def find_controllers(vrsystem):
-    """返回 {"left": device_index, "right": device_index}，缺失的手不在字典里。"""
-    found = {}
+def build_logger(quiet: bool, log_file: str | None):
+    path = Path(log_file) if log_file else None
+
+    def log(message: str, *, error: bool = False, force: bool = False) -> None:
+        if not quiet or force:
+            print(message, file=sys.stderr if error else sys.stdout)
+        if path is not None:
+            try:
+                path.parent.mkdir(parents=True, exist_ok=True)
+                stamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                with path.open("a", encoding="utf-8") as file:
+                    file.write(f"[{stamp}] {message}\n")
+            except Exception:
+                pass
+
+    return log
+
+
+def find_controllers(vrsystem) -> dict[str, int]:
+    found: dict[str, int] = {}
     for idx in range(openvr.k_unMaxTrackedDeviceCount):
         if vrsystem.getTrackedDeviceClass(idx) != openvr.TrackedDeviceClass_Controller:
             continue
@@ -92,8 +124,7 @@ def find_controllers(vrsystem):
     return found
 
 
-def read_pressed(vrsystem, idx) -> set[str]:
-    """读取某只手柄当前按下的按钮名集合。"""
+def read_pressed(vrsystem, idx: int) -> set[str]:
     result, state = vrsystem.getControllerState(idx)
     if not result:
         return set()
@@ -101,7 +132,6 @@ def read_pressed(vrsystem, idx) -> set[str]:
     for name, bit in BUTTON_BITS.items():
         if state.ulButtonPressed & bit:
             pressed.add(name)
-    # 模拟轴兜底：扳机/握把
     for name, axis in AXIS_INDEX.items():
         try:
             if state.rAxis[axis].x >= TRIGGER_THRESHOLD:
@@ -111,92 +141,117 @@ def read_pressed(vrsystem, idx) -> set[str]:
     return pressed
 
 
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="SteamVR controller to keyboard hotkey bridge")
+    parser.add_argument("--debug", action="store_true", help="print detected controller buttons")
+    parser.add_argument("--quiet", action="store_true", help="suppress console output for SteamVR autostart")
+    parser.add_argument("--log-file", help="append bridge status and actions to a log file")
+    return parser.parse_args()
+
+
 def main() -> int:
-    parser = argparse.ArgumentParser(description="VR 控制器 -> 键盘组合键 桥接器")
-    parser.add_argument("--debug", action="store_true", help="打印识别到的按钮，用于确认键位")
-    args = parser.parse_args()
+    args = parse_args()
+    log = build_logger(args.quiet, args.log_file)
+    instance = SingleInstance(MUTEX_NAME)
+    if not instance.acquire():
+        log("VRC VoiceBridge controller bridge is already running.")
+        return 0
 
     try:
-        openvr.init(openvr.VRApplication_Background)
-    except Exception as exc:
-        print(f"无法连接 SteamVR，请先启动 SteamVR。\n（{exc}）", file=sys.stderr)
-        return 1
-    vrsystem = openvr.VRSystem()
-    print("已连接 SteamVR。按 Ctrl+C 退出。")
+        try:
+            openvr.init(openvr.VRApplication_Background)
+        except Exception as exc:
+            log(f"Cannot connect to SteamVR. Start SteamVR first. ({exc})", error=True, force=not args.quiet)
+            return 1
 
-    # 每个 (hand, button) 的上一帧按下状态，用于检测按下/松开边沿
-    prev: dict[tuple[str, str], bool] = {}
-    held_keys: dict[tuple[str, str], str] = {}  # hold 模式正在按住的键
-    chord_active: dict[int, bool] = {}          # 各 chord 是否处于已触发状态
-    period = 1.0 / POLL_HZ
+        vrsystem = openvr.VRSystem()
+        log("Connected to SteamVR. Press Ctrl+C to exit.")
 
-    try:
-        while True:
-            controllers = find_controllers(vrsystem)
-            # 当前各手按下的按钮集合
-            pressed_by_hand: dict[str, set[str]] = {
-                hand: read_pressed(vrsystem, idx) for hand, idx in controllers.items()
-            }
+        prev: dict[tuple[str, str], bool] = {}
+        held_keys: dict[tuple[str, str], str] = {}
+        chord_active: dict[int, bool] = {}
+        period = 1.0 / POLL_HZ
 
-            if args.debug:
-                for hand, names in pressed_by_hand.items():
-                    if names:
-                        print(f"[{hand}] {sorted(names)}")
+        try:
+            event = openvr.VREvent_t()
+            while True:
+                # SteamVR 退出时会发 VREvent_Quit -> 主动结束，释放单实例锁；
+                # 这样重启 SteamVR 能干净地自动拉起新代码（否则旧进程占着锁会挡住新实例）。
+                got_quit = False
+                while vrsystem.pollNextEvent(event):
+                    if event.eventType == openvr.VREvent_Quit:
+                        got_quit = True
+                if got_quit:
+                    log("SteamVR 已退出，桥接器结束。")
+                    try:
+                        vrsystem.acknowledgeQuit_Exiting()
+                    except Exception:
+                        pass
+                    break
 
-            # 先判定组合键：被组合占用的按钮本帧不再走单键逻辑
-            consumed: set[tuple[str, str]] = set()
-            for ci, chord in enumerate(CHORDS):
-                btns = [tuple(b) for b in chord["buttons"]]
-                all_down = all(
-                    b[1] in pressed_by_hand.get(b[0], set()) for b in btns
-                )
-                if all_down and not chord_active.get(ci):
-                    keyboard.send(chord["keys"])
-                    chord_active[ci] = True
-                    print(f"  -> chord {chord['keys']}")
-                elif not all_down:
-                    chord_active[ci] = False
-                if all_down:
-                    consumed.update(btns)
+                controllers = find_controllers(vrsystem)
+                pressed_by_hand = {
+                    hand: read_pressed(vrsystem, idx) for hand, idx in controllers.items()
+                }
 
-            # 单键绑定：检测按下/松开边沿
-            for b in BINDINGS:
-                key = (b["hand"], b["button"])
-                down = b["button"] in pressed_by_hand.get(b["hand"], set())
-                was = prev.get(key, False)
+                if args.debug:
+                    for hand, names in pressed_by_hand.items():
+                        if names:
+                            log(f"[{hand}] {sorted(names)}")
 
-                if key in consumed:
-                    # 被组合占用：若之前是 hold 按住状态，松开它
-                    if held_keys.get(key):
-                        keyboard.release(held_keys.pop(key))
+                consumed: set[tuple[str, str]] = set()
+                for ci, chord in enumerate(CHORDS):
+                    buttons = [tuple(button) for button in chord["buttons"]]
+                    all_down = all(
+                        button in pressed_by_hand.get(hand, set()) for hand, button in buttons
+                    )
+                    if all_down and not chord_active.get(ci):
+                        keyboard.send(chord["keys"])
+                        chord_active[ci] = True
+                        log(f"-> chord {chord['keys']}")
+                    elif not all_down:
+                        chord_active[ci] = False
+                    if all_down:
+                        consumed.update(buttons)
+
+                for binding in BINDINGS:
+                    key = (binding["hand"], binding["button"])
+                    down = binding["button"] in pressed_by_hand.get(binding["hand"], set())
+                    was = prev.get(key, False)
+
+                    if key in consumed:
+                        if held_keys.get(key):
+                            keyboard.release(held_keys.pop(key))
+                        prev[key] = down
+                        continue
+
+                    if binding["mode"] == "press":
+                        if down and not was:
+                            keyboard.send(binding["keys"])
+                            log(f"-> press {binding['keys']}")
+                    elif binding["mode"] == "hold":
+                        if down and not was:
+                            keyboard.press(binding["keys"])
+                            held_keys[key] = binding["keys"]
+                            log(f"-> hold down {binding['keys']}")
+                        elif not down and was and held_keys.get(key):
+                            keyboard.release(held_keys.pop(key))
+                            log(f"-> hold up {binding['keys']}")
                     prev[key] = down
-                    continue
 
-                if b["mode"] == "press":
-                    if down and not was:
-                        keyboard.send(b["keys"])
-                        print(f"  -> press {b['keys']}")
-                elif b["mode"] == "hold":
-                    if down and not was:
-                        keyboard.press(b["keys"])
-                        held_keys[key] = b["keys"]
-                        print(f"  -> hold down {b['keys']}")
-                    elif not down and was and held_keys.get(key):
-                        keyboard.release(held_keys.pop(key))
-                        print(f"  -> hold up {b['keys']}")
-                prev[key] = down
-
-            time.sleep(period)
-    except KeyboardInterrupt:
-        pass
+                time.sleep(period)
+        except KeyboardInterrupt:
+            pass
+        finally:
+            for keys in list(held_keys.values()):
+                try:
+                    keyboard.release(keys)
+                except Exception:
+                    pass
+            openvr.shutdown()
+            log("Controller bridge exited.")
     finally:
-        for k in list(held_keys.values()):
-            try:
-                keyboard.release(k)
-            except Exception:
-                pass
-        openvr.shutdown()
-        print("\n已退出。")
+        instance.release()
     return 0
 
 
