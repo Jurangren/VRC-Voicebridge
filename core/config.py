@@ -127,6 +127,11 @@ class AppConfig:
     speech_translate_toggle_hotkey: str = "ctrl+alt+f9"        # 开/关实时翻译
     image_translate_hotkey: str = "ctrl+alt+i"                 # 图片翻译：抓窗口->百度图片翻译->VR 显示
     image_translate_window_keyword: str = "VRChat"             # 抓取的窗口标题关键字（留空则截主显示器）
+    image_translate_result_seconds: float = 5.0                # 图片翻译结果显示多少秒后自动消失（0=不自动消失，需手动关闭）
+    vr_menu_open_hotkey: str = "ctrl+alt+m"                    # VR 快捷菜单：打开（手柄长按左 B 映射到此）
+    vr_menu_cycle_hotkey: str = "ctrl+alt+n"                   # VR 快捷菜单：循环下一项（手柄短按 B 映射到此）
+    vr_menu_dwell_seconds: float = 1.5                         # VR 快捷菜单停留多少秒后自动确认当前项
+    control_window_hotkey: str = ""                            # 打开桌面控制面板的热键（留空则只能从托盘打开）
     tencent_asr_secret_id: str = ""
     tencent_asr_secret_key: str = ""
     tencent_asr_region: str = "ap-guangzhou"
@@ -293,7 +298,8 @@ def _float_fields() -> set[str]:
         "overlay_alpha", "speaker_volume", "speech_translate_chunk_seconds", "speech_translate_energy_threshold",
         "mic_vad_threshold", "speech_translate_vad_threshold", "speech_translate_speaker_similarity",
         "speech_translate_overlay_text_seconds", "speech_translate_overlay_text_alpha",
-        "speech_translate_osc_user_hold_seconds",
+        "speech_translate_osc_user_hold_seconds", "vr_menu_dwell_seconds",
+        "image_translate_result_seconds",
     }
 
 
@@ -316,6 +322,10 @@ def _coerce_value(key: str, value: Any) -> Any:
             return min(max(number, 1.0), 30.0)
         if key == "speech_translate_osc_user_hold_seconds":
             return min(max(number, 0.0), 120.0)
+        if key == "vr_menu_dwell_seconds":
+            return min(max(number, 0.5), 6.0)
+        if key == "image_translate_result_seconds":
+            return min(max(number, 0.0), 60.0)
         return min(max(number, 0.1), 1.0)
     if key in {"preset_names", "preset_hotkeys", "preset_snapshots"}:
         return value

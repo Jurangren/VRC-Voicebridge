@@ -13,6 +13,7 @@ from core.errors import ErrorHandler
 from core.pipeline import AppPipeline
 from services.mic_listener import MicrophoneListener
 from services.osc_client import VrcOscClient
+from ui.control_window import ControlWindow
 from ui.hotkey import HotkeyManager
 from ui.input_window import InputWindow
 from ui.speech_indicator import SpeechIndicator
@@ -53,8 +54,8 @@ class Application:
             progress_callback=self.status_overlay.show_progress,
             done_callback=self.status_overlay.show_done,
             error_callback=self.status_overlay.show_error,
-            before_audio_callback=self.hide_typing_bubble,
-            finish_callback=self.hide_typing_bubble,
+            before_audio_callback=lambda: self._post(self.hide_typing_bubble),
+            finish_callback=lambda: self._post(self.hide_typing_bubble),
         )
         self.input_window = InputWindow(
             self.root,
@@ -69,8 +70,25 @@ class Application:
         self.osc_toggle_hotkey_manager = HotkeyManager(self.toggle_listen_osc)
         self.realtime_toggle_hotkey_manager = HotkeyManager(self.toggle_realtime_translate)
         self.image_translate_hotkey_manager = HotkeyManager(self.on_image_translate_hotkey)
+        self.vr_menu_open_hotkey_manager = HotkeyManager(self.on_vr_menu_open_hotkey)
+        self.vr_menu_cycle_hotkey_manager = HotkeyManager(self.on_vr_menu_cycle_hotkey)
+        self.control_window_hotkey_manager = HotkeyManager(self.show_control)
         self.preset_hotkey_managers = [HotkeyManager(lambda index=index: self.switch_preset(index)) for index in range(1, PRESET_COUNT + 1)]
-        self.tray = TrayApp(self.config_manager, self.show_input, self.quit)
+        self.control_window = ControlWindow(
+            self.root,
+            self.config_manager,
+            callbacks={
+                "apply_preset": self._switch_preset,
+                "save_preset": self.config_manager.save_current_to_preset,
+                "toggle_realtime": self._toggle_realtime_translate,
+                "toggle_osc": self._toggle_listen_osc,
+                "show_input": self.show_input,
+                "image_translate": self._handle_image_translate_hotkey,
+                "set_overlay_alpha": lambda value: self.config_manager.patch_from_dict({"overlay_alpha": value}),
+                "status": self._control_status,
+            },
+        )
+        self.tray = TrayApp(self.config_manager, self.show_input, lambda: self._post(self.quit), self.show_control)
         self._typing_job: str | None = None
         self.mic_listener: MicrophoneListener | None = None
         self._mic_hotkey_pressed = False
@@ -85,6 +103,17 @@ class Application:
         self._img_seq = 0
         # 后台翻译线程 -> 主线程的结果队列（不跨线程调 root.after，避免弄挂 tkinter）
         self._img_queue: queue.Queue = queue.Queue()
+        # 出图后自动消失计时器句柄（手动关闭/重新翻译时取消）
+        self._img_hide_job: str | None = None
+        # 通用主线程调度队列：keyboard 热键回调/托盘/flask 都在各自线程里，绝不能直接碰 tkinter
+        # （含 root.after），否则跑一段时间后 Tk 事件循环会被弄挂——浮窗卡死、热键动作失效。
+        # 这些线程统一通过 _post 把动作投递到此队列，由主线程的 _call_poll 取出执行。
+        self._call_queue: queue.Queue = queue.Queue()
+        # VR 快捷菜单：菜单键打开/循环下一项，停留到期自动确认当前项
+        self._vr_menu_open = False
+        self._vr_menu_index = 0
+        self._vr_menu_items: list[dict] = []
+        self._vr_menu_dwell_job: str | None = None
 
     def _speech_capture_status(self) -> dict:
         """返回双说话指示器状态：translate=实时翻译听到的声音（蓝），mic=自己麦克风 VAD（绿）。"""
@@ -106,7 +135,7 @@ class Application:
             self.config_manager,
             self.error_handler,
             self.show_input,
-            self.reload_runtime_mode,
+            lambda: self._post(self.reload_runtime_mode),  # flask 线程触发 -> 投递到主线程执行
         )
         app.config["speech_indicator"] = self.speech_indicator
         start_web_server(app, config.web_host, config.web_port)
@@ -122,6 +151,7 @@ class Application:
             pass
         self._keep_alive()
         self._img_poll()
+        self._call_poll()
         self.root.mainloop()
 
     def _handle_signal(self, *_args) -> None:
@@ -135,8 +165,28 @@ class Application:
             return
         self.root.after(200, self._keep_alive)
 
+    def _post(self, fn) -> None:
+        """线程安全地把一个可调用投递到 tkinter 主线程执行。任何非主线程（keyboard 热键回调、
+        托盘、flask）想触发动作都必须经此，绝不能直接 root.after，否则会弄挂 Tk 事件循环。"""
+        self._call_queue.put(fn)
+
+    def _call_poll(self) -> None:
+        # 主线程轮询：取出其它线程投递来的动作并在主线程执行（间隔短以保证热键响应及时）
+        try:
+            while True:
+                fn = self._call_queue.get_nowait()
+                try:
+                    fn()
+                except Exception as exc:
+                    self.error_handler.report("主线程任务执行失败", exc)
+        except queue.Empty:
+            pass
+        finally:
+            if not self._quitting:
+                self.root.after(20, self._call_poll)
+
     def show_input(self) -> None:
-        self.root.after(0, self.toggle_input)
+        self._post(self.toggle_input)
 
     def toggle_input(self) -> None:
         if self.input_window.is_visible():
@@ -186,6 +236,9 @@ class Application:
         self.osc_toggle_hotkey_manager.unregister()
         self.realtime_toggle_hotkey_manager.unregister()
         self.image_translate_hotkey_manager.unregister()
+        self.vr_menu_open_hotkey_manager.unregister()
+        self.vr_menu_cycle_hotkey_manager.unregister()
+        self.control_window_hotkey_manager.unregister()
         for manager in self.preset_hotkey_managers:
             manager.unregister()
         self.stop_microphone_listener()
@@ -197,6 +250,8 @@ class Application:
         self.reload_osc_toggle_hotkey()
         self.reload_realtime_toggle_hotkey()
         self.reload_image_translate_hotkey()
+        self.reload_vr_menu_hotkeys()
+        self.reload_control_window_hotkey()
         self.reload_realtime_pipeline()
 
     def reload_realtime_pipeline(self) -> None:
@@ -216,7 +271,7 @@ class Application:
         threading.Thread(target=_restart, daemon=True).start()
 
     def switch_next_preset(self) -> None:
-        self.root.after(0, self._switch_next_preset)
+        self._post(self._switch_next_preset)
 
     def _switch_next_preset(self) -> None:
         print(f"[{time.strftime('%H:%M:%S')}] 热键触发：切换下一个预设")
@@ -225,7 +280,7 @@ class Application:
         self._show_preset_switched(config.active_preset_index)
 
     def switch_preset(self, index: int) -> None:
-        self.root.after(0, lambda: self._switch_preset(index))
+        self._post(lambda: self._switch_preset(index))
 
     def _switch_preset(self, index: int) -> None:
         print(f"[{time.strftime('%H:%M:%S')}] 热键触发：切换预设 {index}")
@@ -264,7 +319,7 @@ class Application:
             self.error_handler.report("聊天框翻译显示热键注册失败", exc)
 
     def toggle_listen_osc(self) -> None:
-        self.root.after(0, self._toggle_listen_osc)
+        self._post(self._toggle_listen_osc)
 
     def _toggle_listen_osc(self) -> None:
         print(f"[{time.strftime('%H:%M:%S')}] 热键触发：聊天框翻译开关")
@@ -285,7 +340,7 @@ class Application:
             self.error_handler.report("实时翻译开关热键注册失败", exc)
 
     def toggle_realtime_translate(self) -> None:
-        self.root.after(0, self._toggle_realtime_translate)
+        self._post(self._toggle_realtime_translate)
 
     def _toggle_realtime_translate(self) -> None:
         print(f"[{time.strftime('%H:%M:%S')}] 热键触发：实时翻译启停")
@@ -321,13 +376,14 @@ class Application:
             self.error_handler.report("图片翻译热键注册失败", exc)
 
     def on_image_translate_hotkey(self) -> None:
-        self.root.after(0, self._handle_image_translate_hotkey)
+        self._post(self._handle_image_translate_hotkey)
 
     def _handle_image_translate_hotkey(self) -> None:
         # 三态机：空闲->截图翻译；翻译中->直接取消（不提示）；出图后->关闭图片
         if self.vr_ui is None:
             self.status_overlay.show_hint("图片翻译仅在 VR 模式可用")
             return
+        self._cancel_img_hide_job()  # 任何状态切换都先取消自动消失计时
         if self._img_state == "translating":
             self._img_seq += 1            # 让后台结果作废
             self._img_state = "idle"
@@ -366,6 +422,10 @@ class Application:
                 if kind == "done":
                     self._img_state = "showing"
                     self.vr_ui.image_show_result(payload)
+                    self._cancel_img_hide_job()
+                    seconds = float(self.config_manager.get().image_translate_result_seconds)
+                    if seconds > 0:
+                        self._img_hide_job = self.root.after(int(seconds * 1000), self._img_auto_hide)
                 else:
                     self._img_state = "idle"
                     self.vr_ui.image_hide()
@@ -375,6 +435,134 @@ class Application:
         finally:
             if not self._quitting:
                 self.root.after(200, self._img_poll)
+
+    def _cancel_img_hide_job(self) -> None:
+        if self._img_hide_job is not None:
+            self.root.after_cancel(self._img_hide_job)
+            self._img_hide_job = None
+
+    def _img_auto_hide(self) -> None:
+        self._img_hide_job = None
+        if self._img_state == "showing" and self.vr_ui is not None:
+            self._img_state = "idle"
+            self.vr_ui.image_hide()
+
+    # ---------- VR 快捷菜单 ----------
+
+    def reload_vr_menu_hotkeys(self) -> None:
+        try:
+            config = self.config_manager.get()
+            open_hotkey = config.vr_menu_open_hotkey.strip()
+            cycle_hotkey = config.vr_menu_cycle_hotkey.strip()
+            if open_hotkey:
+                self.vr_menu_open_hotkey_manager.register(open_hotkey)
+            if cycle_hotkey:
+                self.vr_menu_cycle_hotkey_manager.register(cycle_hotkey)
+        except Exception as exc:
+            self.error_handler.report("VR 快捷菜单热键注册失败", exc)
+
+    def on_vr_menu_open_hotkey(self) -> None:
+        self._post(self._handle_vr_menu_open)
+
+    def on_vr_menu_cycle_hotkey(self) -> None:
+        self._post(self._handle_vr_menu_cycle)
+
+    def _vr_menu_build_items(self) -> list[dict]:
+        """构造菜单项（带实时状态文本）。索引 0 为「关闭菜单」，作为默认高亮的安全项：
+        误触菜单键后什么都不做、停留到期即自动关闭。"""
+        config = self.config_manager.get()
+        running = bool(PIPELINE.status().get("running"))
+        osc_on = bool(config.speech_translate_osc_enabled)
+        preset_name = config.preset_names[config.active_preset_index - 1]
+        return [
+            {"key": "cancel", "label": "关闭菜单", "value": ""},
+            {"key": "realtime", "label": "实时翻译", "value": "运行中" if running else "已停止"},
+            {"key": "osc", "label": "聊天框翻译显示", "value": "开" if osc_on else "关"},
+            {"key": "next_preset", "label": "下一个预设", "value": f"{config.active_preset_index}·{preset_name}"},
+            {"key": "image", "label": "图片翻译", "value": ""},
+        ]
+
+    def _handle_vr_menu_open(self) -> None:
+        # 手柄长按左 B 触发：打开菜单并高亮第一项（已打开则保持不动，仅重置停留计时）
+        if self.vr_ui is None:
+            self.status_overlay.show_hint("VR 快捷菜单仅在 VR 模式可用")
+            return
+        if not self._vr_menu_open:
+            self._vr_menu_open = True
+            self._vr_menu_index = 0
+        self._vr_menu_refresh()
+
+    def _handle_vr_menu_cycle(self) -> None:
+        # 手柄短按 B 触发：菜单已打开则切到下一项；未打开则忽略（需先长按左 B 调出）
+        if self.vr_ui is None or not self._vr_menu_open:
+            return
+        count = max(len(self._vr_menu_items), 1)
+        self._vr_menu_index = (self._vr_menu_index + 1) % count
+        self._vr_menu_refresh()
+
+    def _vr_menu_refresh(self) -> None:
+        # 刷新菜单内容并重置停留计时：每次按菜单键都重新开始倒计时，停手后才会自动确认
+        items = self._vr_menu_build_items()
+        self._vr_menu_items = items
+        if self._vr_menu_index >= len(items):
+            self._vr_menu_index = 0
+        dwell = max(0.5, float(self.config_manager.get().vr_menu_dwell_seconds))
+        deadline = time.monotonic() + dwell
+        self.vr_ui.menu_open(items, self._vr_menu_index, deadline, dwell)
+        if self._vr_menu_dwell_job is not None:
+            self.root.after_cancel(self._vr_menu_dwell_job)
+        self._vr_menu_dwell_job = self.root.after(int(dwell * 1000), self._vr_menu_confirm)
+
+    def _vr_menu_confirm(self) -> None:
+        self._vr_menu_dwell_job = None
+        if not self._vr_menu_open:
+            return
+        items = self._vr_menu_items
+        key = items[self._vr_menu_index]["key"] if 0 <= self._vr_menu_index < len(items) else "cancel"
+        self._vr_menu_close()
+        if key == "realtime":
+            self._toggle_realtime_translate()
+        elif key == "osc":
+            self._toggle_listen_osc()
+        elif key == "next_preset":
+            self._switch_next_preset()
+        elif key == "image":
+            self._handle_image_translate_hotkey()
+        # key == "cancel"：仅关闭，无动作
+
+    def _vr_menu_close(self) -> None:
+        self._vr_menu_open = False
+        if self._vr_menu_dwell_job is not None:
+            self.root.after_cancel(self._vr_menu_dwell_job)
+            self._vr_menu_dwell_job = None
+        if self.vr_ui is not None:
+            self.vr_ui.menu_close()
+
+    # ---------- 桌面控制面板 ----------
+
+    def reload_control_window_hotkey(self) -> None:
+        try:
+            hotkey = self.config_manager.get().control_window_hotkey.strip()
+            if hotkey:
+                self.control_window_hotkey_manager.register(hotkey)
+        except Exception as exc:
+            self.error_handler.report("控制面板热键注册失败", exc)
+
+    def show_control(self) -> None:
+        self._post(self.control_window.show)
+
+    def _control_status(self) -> dict:
+        config = self.config_manager.get()
+        return {
+            "realtime_running": bool(PIPELINE.status().get("running")),
+            "osc_enabled": bool(config.speech_translate_osc_enabled),
+            "preset_index": config.active_preset_index,
+            "preset_name": config.preset_names[config.active_preset_index - 1],
+            "preset_names": list(config.preset_names),
+            "overlay_alpha": float(config.overlay_alpha),
+            "vr_mode": self.vr_ui is not None,
+            "web_url": f"http://{config.web_host}:{config.web_port}/",
+        }
 
     def reload_microphone_hotkey(self) -> None:
         try:
@@ -403,10 +591,10 @@ class Application:
             )
 
     def on_microphone_hotkey_press(self) -> None:
-        self.root.after(0, self._handle_microphone_hotkey_press)
+        self._post(self._handle_microphone_hotkey_press)
 
     def on_microphone_hotkey_release(self) -> None:
-        self.root.after(0, self._handle_microphone_hotkey_release)
+        self._post(self._handle_microphone_hotkey_release)
 
     def _handle_microphone_hotkey_press(self) -> None:
         if self._mic_hotkey_pressed:
@@ -469,7 +657,7 @@ class Application:
         def submit_later() -> None:
             self._set_pending_microphone_text(text)
 
-        self.root.after(0, submit_later)
+        self._post(submit_later)
 
     def on_microphone_capture_finish(self, recognized: bool) -> None:
         if recognized:
@@ -478,7 +666,7 @@ class Application:
             self.hide_typing_bubble()
             self.status_overlay.show_warning("未识别到语音", hide_after_ms=1800)
 
-        self.root.after(0, finish_later)
+        self._post(finish_later)
 
     def _set_pending_microphone_text(self, text: str) -> None:
         self._clear_pending_microphone_text()
@@ -538,6 +726,11 @@ class Application:
         self.osc_toggle_hotkey_manager.unregister()
         self.realtime_toggle_hotkey_manager.unregister()
         self.image_translate_hotkey_manager.unregister()
+        self.vr_menu_open_hotkey_manager.unregister()
+        self.vr_menu_cycle_hotkey_manager.unregister()
+        self.control_window_hotkey_manager.unregister()
+        self._cancel_img_hide_job()
+        self._vr_menu_close()
         for manager in self.preset_hotkey_managers:
             manager.unregister()
         if self.vr_ui is not None:

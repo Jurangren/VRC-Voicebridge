@@ -7,6 +7,7 @@ tkinter 的 root.after 投递到主线程，与桌面版一致的单线程模型
 from __future__ import annotations
 
 import ctypes
+import queue
 import time
 import tkinter as tk
 
@@ -19,8 +20,63 @@ _SUBTITLE_LIMIT = 6         # 同时显示的字幕条上限，超出丢最旧
 _FADE_SECONDS = 0.8         # 末尾渐隐时长
 
 
+class _DoubleBufferedOverlay:
+    """A/B 双缓冲 overlay：更新纹理时先把新帧推到备用 overlay 并显示（sort order 抬高盖在旧帧上），
+    再隐藏旧 overlay。这样任意时刻都有一块带完整纹理的 overlay 在显示，避免单 overlay 直接
+    setOverlayRaw 上传纹理那一瞬间出现的空白/撕裂帧（即"先消失旧帧再贴新帧"的闪烁）。"""
+
+    def __init__(self, overlay, key_prefix: str, name: str, width_m: float, matrix, hmd_index: int):
+        self._overlay = overlay
+        self._handles = [
+            overlay.createOverlay(f"{key_prefix}.a", f"{name} A"),
+            overlay.createOverlay(f"{key_prefix}.b", f"{name} B"),
+        ]
+        for handle in self._handles:
+            overlay.setOverlayWidthInMeters(handle, width_m)
+            overlay.setOverlayAlpha(handle, 1.0)
+            overlay.setOverlayTransformTrackedDeviceRelative(handle, hmd_index, matrix)
+        self._front = -1            # 当前正在显示的 handle 索引，-1 表示两块都没显示
+        self._last_data: bytes | None = None
+        self._sort = 0
+
+    @property
+    def handles(self) -> list:
+        return self._handles
+
+    def submit(self, image) -> None:
+        data = image.tobytes()  # PIL RGBA -> R,G,B,A 字节，与 setOverlayRaw 期望一致
+        # 内容未变则保持当前帧不动：不重传纹理、不交换缓冲（避免无谓闪烁）
+        if self._front != -1 and data == self._last_data:
+            return
+        back = 0 if self._front != 0 else 1
+        buffer = (ctypes.c_char * len(data)).from_buffer_copy(data)
+        self._overlay.setOverlayRaw(self._handles[back], buffer, image.width, image.height, 4)
+        self._sort += 1
+        try:
+            self._overlay.setOverlaySortOrder(self._handles[back], self._sort)  # 新帧盖在旧帧上
+        except Exception:
+            pass
+        self._overlay.showOverlay(self._handles[back])      # 先显示新帧
+        if self._front != -1 and self._front != back:
+            try:
+                self._overlay.hideOverlay(self._handles[self._front])   # 再隐藏旧帧
+            except Exception:
+                pass
+        self._front = back
+        self._last_data = data
+
+    def hide(self) -> None:
+        for handle in self._handles:
+            try:
+                self._overlay.hideOverlay(handle)
+            except Exception:
+                pass
+        self._front = -1
+        self._last_data = None  # 重新显示时强制重传一次纹理
+
+
 class VRSession:
-    """封装 pyopenvr：创建一块 HMD 相对定位的 overlay，并推送 RGBA 纹理。"""
+    """封装 pyopenvr：维护两组 HMD 相对定位的双缓冲 overlay（字幕/状态 + 图片翻译）。"""
 
     def __init__(self, width_m: float = 1.1, distance_m: float = 1.4, vertical_m: float = -0.55):
         try:
@@ -38,80 +94,45 @@ class VRSession:
             ) from exc
 
         self._overlay = openvr.IVROverlay()
-        self._handle = self._overlay.createOverlay("vrc.voicebridge.overlay", "VRC VoiceBridge")
-        self._overlay.setOverlayWidthInMeters(self._handle, width_m)
-        self._overlay.setOverlayAlpha(self._handle, 1.0)
 
-        # 相对 HMD 定位：正前方 distance_m、略微下移 vertical_m，跟随视野
+        # 字幕/状态 overlay：相对 HMD 定位，正前方 distance_m、略微下移 vertical_m，跟随视野
         matrix = openvr.HmdMatrix34_t()
         matrix.m[0][0], matrix.m[0][1], matrix.m[0][2], matrix.m[0][3] = 1.0, 0.0, 0.0, 0.0
         matrix.m[1][0], matrix.m[1][1], matrix.m[1][2], matrix.m[1][3] = 0.0, 1.0, 0.0, vertical_m
         matrix.m[2][0], matrix.m[2][1], matrix.m[2][2], matrix.m[2][3] = 0.0, 0.0, 1.0, -distance_m
-        self._overlay.setOverlayTransformTrackedDeviceRelative(
-            self._handle, openvr.k_unTrackedDeviceIndex_Hmd, matrix
+        self._main = _DoubleBufferedOverlay(
+            self._overlay, "vrc.voicebridge.overlay", "VRC VoiceBridge", width_m, matrix,
+            openvr.k_unTrackedDeviceIndex_Hmd,
         )
-        self._shown = False
-        self._last_data: bytes | None = None
 
-        # 第二块 overlay：图片翻译（蒙版/转圈/结果图）。更大、正前方、view-locked。
+        # 第二组 overlay：图片翻译（转圈/结果图）。更大、正前方、view-locked。
         # 创建失败不影响字幕 overlay，只是图片翻译不可用。
-        self._img_handle = None
-        self._img_shown = False
-        self._img_last_data: bytes | None = None
+        self._img: _DoubleBufferedOverlay | None = None
         try:
-            self._img_handle = self._overlay.createOverlay("vrc.voicebridge.imgtrans", "VRC VoiceBridge Image Translate")
-            self._overlay.setOverlayWidthInMeters(self._img_handle, 1.6)
-            self._overlay.setOverlayAlpha(self._img_handle, 1.0)
             img_matrix = openvr.HmdMatrix34_t()
             img_matrix.m[0][0], img_matrix.m[0][1], img_matrix.m[0][2], img_matrix.m[0][3] = 1.0, 0.0, 0.0, 0.0
             img_matrix.m[1][0], img_matrix.m[1][1], img_matrix.m[1][2], img_matrix.m[1][3] = 0.0, 1.0, 0.0, 0.0
             img_matrix.m[2][0], img_matrix.m[2][1], img_matrix.m[2][2], img_matrix.m[2][3] = 0.0, 0.0, 1.0, -1.3
-            self._overlay.setOverlayTransformTrackedDeviceRelative(
-                self._img_handle, openvr.k_unTrackedDeviceIndex_Hmd, img_matrix
+            self._img = _DoubleBufferedOverlay(
+                self._overlay, "vrc.voicebridge.imgtrans", "VRC VoiceBridge Image Translate", 1.6, img_matrix,
+                openvr.k_unTrackedDeviceIndex_Hmd,
             )
         except Exception:
-            self._img_handle = None
+            self._img = None
 
     def submit(self, image) -> None:
-        data = image.tobytes()  # PIL RGBA -> R,G,B,A 字节，与 setOverlayRaw 期望一致
-        # 内容未变则跳过纹理重传：每 100ms 重传同一帧会让 SteamVR overlay 持续闪烁
-        if data != self._last_data:
-            buffer = (ctypes.c_char * len(data)).from_buffer_copy(data)
-            self._overlay.setOverlayRaw(self._handle, buffer, image.width, image.height, 4)
-            self._last_data = data
-        if not self._shown:
-            self._overlay.showOverlay(self._handle)
-            self._shown = True
+        self._main.submit(image)
 
     def hide(self) -> None:
-        if self._shown:
-            try:
-                self._overlay.hideOverlay(self._handle)
-            except Exception:
-                pass
-            self._shown = False
-        self._last_data = None  # 重新显示时强制重传一次纹理
+        self._main.hide()
 
     def submit_image(self, image) -> None:
-        if self._img_handle is None:
-            return
-        data = image.tobytes()
-        if data != self._img_last_data:
-            buffer = (ctypes.c_char * len(data)).from_buffer_copy(data)
-            self._overlay.setOverlayRaw(self._img_handle, buffer, image.width, image.height, 4)
-            self._img_last_data = data
-        if not self._img_shown:
-            self._overlay.showOverlay(self._img_handle)
-            self._img_shown = True
+        if self._img is not None:
+            self._img.submit(image)
 
     def hide_image(self) -> None:
-        if self._img_handle is not None and self._img_shown:
-            try:
-                self._overlay.hideOverlay(self._img_handle)
-            except Exception:
-                pass
-        self._img_shown = False
-        self._img_last_data = None
+        if self._img is not None:
+            self._img.hide()
 
     def poll_events(self) -> None:
         # 排空 OpenVR overlay 事件队列。SteamVR 会持续往队列推事件（焦点进出、仪表盘开关、
@@ -119,11 +140,12 @@ class VRSession:
         # 注意：pyopenvr 的 pollNextOverlayEvent 返回 (result, event) 元组而非 bool——
         # 非空元组恒为真，直接 while 它会死循环卡死主线程，必须取 [0] 判断队列是否还有事件。
         event = self._openvr.VREvent_t()
+        handles = list(self._main.handles)
+        if self._img is not None:
+            handles.extend(self._img.handles)
         try:
-            while self._overlay.pollNextOverlayEvent(self._handle, event)[0]:
-                pass
-            if self._img_handle is not None:
-                while self._overlay.pollNextOverlayEvent(self._img_handle, event)[0]:
+            for handle in handles:
+                while self._overlay.pollNextOverlayEvent(handle, event)[0]:
                     pass
         except Exception:
             pass
@@ -143,6 +165,9 @@ class VROverlayUI:
         self.status_provider = status_provider
         self.config_manager = config_manager
         self._session = VRSession()
+        # 字幕/toast/状态可能被 pipeline、flask、热键等多个线程调用，绝不能跨线程碰 tkinter；
+        # 这些调用只往本队列投递"状态变更"，统一由主线程的 _tick 取出应用。
+        self._mutations: queue.Queue = queue.Queue()
         self._subtitles: list[dict] = []
         self._toast: dict | None = None
         self._status: dict | None = None
@@ -150,6 +175,8 @@ class VROverlayUI:
         self._phase_counter = 0
         self._tick_job: str | None = None
         self._last_empty = False
+        # 快捷菜单状态：None 或 {"items", "index", "deadline", "dwell"}（由 main.py 在主线程更新）
+        self._menu: dict | None = None
         # 图片翻译 overlay 状态：None | "loading" | "image"
         self._img_mode: str | None = None
         self._img_result = None      # PIL.Image，结果图
@@ -187,14 +214,14 @@ class VROverlayUI:
             "speaker_label": speaker_label,
             "speaker_color": color,
         }
-        self.root.after(0, lambda: self._add_subtitle(item))
+        self._mutations.put(lambda: self._add_subtitle(item))
 
     def show_toast(self, text, seconds=2.2) -> None:
         text = str(text).strip()
         if not text:
             return
         toast = {"text": text, "expire_at": time.monotonic() + max(0.5, float(seconds)), "base_alpha": 0.95}
-        self.root.after(0, lambda: setattr(self, "_toast", toast))
+        self._mutations.put(lambda: setattr(self, "_toast", toast))
 
     # ---------- 图片翻译 overlay API（由 main.py 在主线程调用）----------
 
@@ -213,6 +240,14 @@ class VROverlayUI:
         self._img_mode = None
         self._img_result = None
         self._img_panel = None
+
+    # ---------- 快捷菜单 API（由 main.py 在主线程调用）----------
+
+    def menu_open(self, items: list[dict], index: int, deadline: float, dwell: float) -> None:
+        self._menu = {"items": list(items), "index": int(index), "deadline": float(deadline), "dwell": float(dwell)}
+
+    def menu_close(self) -> None:
+        self._menu = None
 
     # ---------- StatusOverlay API ----------
 
@@ -235,14 +270,14 @@ class VROverlayUI:
         self._set_status("progress", "提示", message, hide_after_ms)
 
     def hide(self) -> None:
-        self.root.after(0, lambda: setattr(self, "_status", None))
+        self._mutations.put(lambda: setattr(self, "_status", None))
 
     # ---------- 内部 ----------
 
     def _set_status(self, state, badge, message, hide_after_ms) -> None:
         expire_at = None if hide_after_ms is None else time.monotonic() + hide_after_ms / 1000.0
         status = {"state": state, "badge": badge, "message": str(message), "expire_at": expire_at}
-        self.root.after(0, lambda: setattr(self, "_status", status))
+        self._mutations.put(lambda: setattr(self, "_status", status))
 
     def _add_subtitle(self, item: dict) -> None:
         self._subtitles.append(item)
@@ -260,6 +295,13 @@ class VROverlayUI:
 
     def _tick_body(self) -> None:
         now = time.monotonic()
+
+        # 先在主线程应用其它线程投递来的状态变更（字幕/toast/状态）
+        try:
+            while True:
+                self._mutations.get_nowait()()
+        except queue.Empty:
+            pass
 
         # 每帧排空 OpenVR 事件队列，避免队列堆积导致 overlay 卡死（见 VRSession.poll_events）
         self._session.poll_events()
@@ -304,11 +346,22 @@ class VROverlayUI:
         self._phase_counter = (self._phase_counter + 1) % 3
         if self._phase_counter == 0:
             self._phase_step = (self._phase_step + 1) % 16
+        menu_payload = None
+        if self._menu is not None:
+            dwell = max(self._menu.get("dwell", 1.0), 0.001)
+            remaining = self._menu.get("deadline", now) - now
+            menu_payload = {
+                "items": self._menu.get("items", []),
+                "index": self._menu.get("index", 0),
+                "dwell_ratio": min(max(remaining / dwell, 0.0), 1.0),
+            }
+
         state = {
             "subtitles": self._subtitles,
             "indicators": indicators,
             "status": status_payload,
             "toast": self._toast,
+            "menu": menu_payload,
             "phase": self._phase_step / 16.0,
         }
 

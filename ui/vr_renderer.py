@@ -209,13 +209,19 @@ def render_composite(state: dict) -> Image.Image | None:
     indicators = state.get("indicators") or {}
     status = state.get("status")
     toast = state.get("toast")
+    menu = state.get("menu")
     phase = float(state.get("phase", 0.0))
 
     has_indicator = bool(indicators.get("translate") or indicators.get("mic"))
-    if not subtitles and not status and not toast and not has_indicator:
+    if not subtitles and not status and not toast and not has_indicator and not menu:
         return None
 
     canvas = Image.new("RGBA", (CANVAS_W, CANVAS_H), (0, 0, 0, 0))
+
+    # 快捷菜单打开时居中显示，叠在最上层（其余浮窗仍在下方照常绘制）
+    if menu:
+        panel = render_menu(menu.get("items") or [], int(menu.get("index", 0)), float(menu.get("dwell_ratio", 0.0)))
+        canvas.alpha_composite(panel, ((CANVAS_W - panel.width) // 2, max((CANVAS_H - panel.height) // 2 - 40, 0)))
 
     # 双麦克风指示器：内容组最下方居中（蓝=翻译在左，绿=自己麦克风在右）
     if has_indicator:
@@ -269,6 +275,63 @@ def render_composite(state: dict) -> Image.Image | None:
         canvas.alpha_composite(tb, ((CANVAS_W - tb.width) // 2, max(ty, 0)))
 
     return canvas
+
+
+# ---------- VR 快捷菜单 ----------
+
+def render_menu(items: list[dict], index: int, dwell_ratio: float) -> Image.Image:
+    """渲染一个居中的快捷菜单面板：标题 + 竖排选项，当前项高亮并带一条停留确认进度条。
+
+    items 每项为 {"label": str, "value": str}，value 为右侧的当前状态文本（可空）。
+    dwell_ratio 0~1，表示距离自动确认还剩多少（1=刚选中，0=即将确认）。
+    """
+    title_font = _font(24)
+    item_font = _font(28)
+    value_font = _font(24)
+    hint_font = _font(20)
+
+    row_h = _line_height(item_font) + 26
+    pad = 22
+    width = 560
+    header_h = _line_height(title_font) + 18
+    hint_h = _line_height(hint_font) + 14
+    height = header_h + row_h * max(len(items), 1) + hint_h + pad * 2
+
+    img = Image.new("RGBA", (width, height), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(img)
+    draw.rounded_rectangle([1, 1, width - 2, height - 2], radius=20, fill=(12, 16, 26, 240), outline=BUBBLE_BORDER + (255,), width=2)
+
+    draw.ellipse([pad, pad + 2, pad + 12, pad + 14], fill=BUBBLE_BORDER + (255,))
+    draw.text((pad + 22, pad), "快捷菜单", font=title_font, fill=TEXT_DIM)
+
+    y = pad + header_h
+    for i, item in enumerate(items):
+        selected = i == index
+        row_x0, row_x1 = pad, width - pad
+        if selected:
+            draw.rounded_rectangle([row_x0, y, row_x1, y + row_h - 8], radius=12,
+                                   fill=_blend(BUBBLE_BG, BUBBLE_BORDER, 0.30) + (255,),
+                                   outline=BUBBLE_BORDER + (255,), width=2)
+        label_fill = BUBBLE_TEXT if selected else TEXT_DIM
+        ty = y + (row_h - 8 - _line_height(item_font)) // 2
+        draw.text((row_x0 + 18, ty), str(item.get("label", "")), font=item_font, fill=label_fill)
+        value = str(item.get("value", "") or "")
+        if value:
+            vw = int(draw.textlength(value, font=value_font))
+            vy = y + (row_h - 8 - _line_height(value_font)) // 2
+            draw.text((row_x1 - 18 - vw, vy), value, font=value_font, fill=BUBBLE_BORDER if selected else TEXT_DIM)
+        # 选中项底部画一条停留确认进度条
+        if selected and dwell_ratio > 0.0:
+            bar_y = y + row_h - 12
+            bar_w = int((row_x1 - row_x0 - 36) * min(max(dwell_ratio, 0.0), 1.0))
+            draw.rounded_rectangle([row_x0 + 18, bar_y, row_x0 + 18 + bar_w, bar_y + 4], radius=2,
+                                   fill=STATE_COLORS["progress"] + (255,))
+        y += row_h
+
+    hint = "短按 B 切换下一项 · 停在某项稍候自动确认"
+    hw = int(draw.textlength(hint, font=hint_font))
+    draw.text(((width - hw) // 2, height - pad - _line_height(hint_font)), hint, font=hint_font, fill=TEXT_DIM)
+    return img
 
 
 # ---------- 图片翻译 overlay（独立一块，与字幕分开） ----------

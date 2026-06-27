@@ -55,6 +55,10 @@ class AppPipeline:
         with self._state_lock:
             if not self._can_cancel_before_audio:
                 return False
+            # 已经在取消中（TTS 线程可能还阻塞在 synthesize_tts 里没来得及处理）：
+            # 不要再当成一次新取消，返回 False 让调用方直接去开下一轮录音，而不是重复弹"已取消"。
+            if self._cancel_event.is_set():
+                return False
             self._cancel_event.set()
             return True
 
@@ -117,7 +121,8 @@ class AppPipeline:
                     osc.set_voice(False)
                 except Exception:
                     pass
-            self._notify_cancelled("已取消当前 TTS 操作")
+            # 取消浮窗已由按下热键的处理函数即时显示；这里不再迟到地重弹一次，
+            # 否则会（在 synthesize_tts 返回后）盖掉用户已经开始的下一轮录音浮窗。
         except Exception as exc:
             self.error_handler.report("VRC TTS 流程失败", exc)
             if voice_opened:
@@ -154,10 +159,6 @@ class AppPipeline:
             self.done_callback(message)
 
     def _notify_error(self, message: str) -> None:
-        if self.error_callback is not None:
-            self.error_callback(message)
-
-    def _notify_cancelled(self, message: str) -> None:
         if self.error_callback is not None:
             self.error_callback(message)
 

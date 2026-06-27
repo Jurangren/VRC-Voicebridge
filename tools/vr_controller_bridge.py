@@ -39,9 +39,21 @@ CHORDS = [
     {"buttons": [("left", "Y"), ("right", "trigger")], "keys": "ctrl+alt+1"},
     # Left Y + right grip -> switch preset 2
     {"buttons": [("left", "Y"), ("right", "grip")], "keys": "ctrl+alt+2"},
-    # Left B + right B -> image translation (capture VRChat window -> Baidu image translate -> show in VR)
+    # Left B + right B -> image translation (capture VRChat window -> Baidu image translate -> show in VR).
+    # Pressing right B alongside left B makes the menu state machine treat left B as a chord
+    # modifier, so this never accidentally opens the quick menu.
     {"buttons": [("left", "B"), ("right", "B")], "keys": "ctrl+alt+i"},
 ]
+
+# VR quick menu via the LEFT menu button (ApplicationMenu, reported as "B"/"Y" on the left hand):
+#   - hold alone for VR_MENU_LONG_PRESS_SECONDS -> open the menu (sends VR_MENU_OPEN_KEYS)
+#   - short tap alone                            -> cycle to the next item (sends VR_MENU_CYCLE_KEYS)
+# If any other button is pressed while it is held, it is treated as the chord modifier (left Y)
+# and neither menu action fires, so the chords above keep working unchanged.
+VR_MENU_OPEN_KEYS = "ctrl+alt+m"
+VR_MENU_CYCLE_KEYS = "ctrl+alt+n"
+VR_MENU_LONG_PRESS_SECONDS = 2.0
+LEFT_MENU_BUTTONS = {"B", "Y"}  # both names map to the left ApplicationMenu bit
 
 POLL_HZ = 60
 TRIGGER_THRESHOLD = 0.6
@@ -141,6 +153,16 @@ def read_pressed(vrsystem, idx: int) -> set[str]:
     return pressed
 
 
+def other_buttons_pressed(pressed_by_hand: dict[str, set[str]]) -> bool:
+    """True if any button other than the left menu button is currently pressed on either hand."""
+    for hand, names in pressed_by_hand.items():
+        for name in names:
+            if hand == "left" and name in LEFT_MENU_BUTTONS:
+                continue
+            return True
+    return False
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="SteamVR controller to keyboard hotkey bridge")
     parser.add_argument("--debug", action="store_true", help="print detected controller buttons")
@@ -170,6 +192,8 @@ def main() -> int:
         prev: dict[tuple[str, str], bool] = {}
         held_keys: dict[tuple[str, str], str] = {}
         chord_active: dict[int, bool] = {}
+        menu_btn_down_since: float | None = None   # 左菜单键独自按下的起始时刻
+        menu_long_fired = False                     # 本次按住是否已触发过长按"打开"
         period = 1.0 / POLL_HZ
 
         try:
@@ -238,6 +262,25 @@ def main() -> int:
                             keyboard.release(held_keys.pop(key))
                             log(f"-> hold up {binding['keys']}")
                     prev[key] = down
+
+                # VR 快捷菜单：左菜单键独自长按打开、短按切换；与别的键同按则视为和弦修饰键，菜单不触发
+                now = time.monotonic()
+                left_menu_down = bool(LEFT_MENU_BUTTONS & pressed_by_hand.get("left", set()))
+                others = other_buttons_pressed(pressed_by_hand)
+                if left_menu_down and not others:
+                    if menu_btn_down_since is None:
+                        menu_btn_down_since = now
+                        menu_long_fired = False
+                    elif not menu_long_fired and (now - menu_btn_down_since) >= VR_MENU_LONG_PRESS_SECONDS:
+                        keyboard.send(VR_MENU_OPEN_KEYS)
+                        menu_long_fired = True
+                        log(f"-> vr menu open {VR_MENU_OPEN_KEYS}")
+                else:
+                    if menu_btn_down_since is not None and not menu_long_fired and not left_menu_down and not others:
+                        keyboard.send(VR_MENU_CYCLE_KEYS)
+                        log(f"-> vr menu cycle {VR_MENU_CYCLE_KEYS}")
+                    menu_btn_down_since = None
+                    menu_long_fired = False
 
                 time.sleep(period)
         except KeyboardInterrupt:

@@ -199,8 +199,20 @@
         <div class="grid">
           <label>图片翻译热键 <input name="image_translate_hotkey" value="{{ config.image_translate_hotkey }}"></label>
           <label>抓取窗口关键字 <input name="image_translate_window_keyword" value="{{ config.image_translate_window_keyword }}"></label>
+          <label>结果自动消失秒数 <input name="image_translate_result_seconds" type="number" step="0.5" min="0" max="60" value="{{ config.image_translate_result_seconds }}"></label>
         </div>
-        <p class="hint">按热键截取该窗口画面（默认 VRChat，即头显视角）提交百度图片翻译，结果图显示在 VR 中；翻译中再按取消、出图后再按关闭，仅 VR 模式可用。凭证复用上方「百度翻译配置」的 App ID/密钥，并需在百度开放平台单独开通「图片翻译」。窗口关键字留空则改为截主显示器。</p>
+        <p class="hint">按热键截取该窗口画面（默认 VRChat，即头显视角）提交百度图片翻译，结果图显示在 VR 中；翻译中再按取消、出图后再按可立即关闭，否则到「结果自动消失秒数」后自动消失（设 0 则不自动消失、只能手动关闭），仅 VR 模式可用。凭证复用上方「百度翻译配置」的 App ID/密钥，并需在百度开放平台单独开通「图片翻译」。窗口关键字留空则改为截主显示器。手柄左 B + 右 B 也可触发。</p>
+      </section>
+
+      <section>
+        <h2>VR 快捷菜单 / 控制面板</h2>
+        <div class="grid">
+          <label>快捷菜单 打开热键 <input name="vr_menu_open_hotkey" value="{{ config.vr_menu_open_hotkey }}"></label>
+          <label>快捷菜单 切换热键 <input name="vr_menu_cycle_hotkey" value="{{ config.vr_menu_cycle_hotkey }}"></label>
+          <label>菜单停留确认秒数 <input name="vr_menu_dwell_seconds" type="number" step="0.1" min="0.5" max="6" value="{{ config.vr_menu_dwell_seconds }}"></label>
+          <label>控制面板热键（可留空）<input name="control_window_hotkey" value="{{ config.control_window_hotkey }}"></label>
+        </div>
+        <p class="hint">VR 模式下：手柄<b>长按 2 秒左手菜单键</b>打开快捷菜单（发送「打开热键」），之后<b>短按菜单键</b>切换到下一项（发送「切换热键」）；停在某项不动，到达「停留确认秒数」后自动执行该项。菜单含：关闭、实时翻译开关、聊天框翻译显示开关、下一个预设、图片翻译。左手菜单键同时与别的键按下时仍作为和弦修饰键，不会误触菜单。控制面板是网页设置之外的桌面快捷窗口，可从托盘「打开控制面板」打开，设置热键后也可一键唤出。</p>
       </section>
 
       <section>
