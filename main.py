@@ -701,6 +701,14 @@ class Application:
 
 
 if __name__ == "__main__":
+    # 打包成单 exe 后，手柄链接器子进程通过本 exe 以 --run-bridge 再次启动自身来运行
+    # （冻结环境里没有独立的 python.exe 和 .py 脚本可调）。源码运行时仍直接跑脚本，不走这里。
+    if "--run-bridge" in sys.argv[1:]:
+        sys.argv = [sys.argv[0]] + [arg for arg in sys.argv[1:] if arg != "--run-bridge"]
+        from tools.vr_controller_bridge import main as bridge_main
+
+        sys.exit(bridge_main())
+
     # 统一启动器：不再区分桌面/VR。默认先以桌面模式运行，并在后台尝试连接 SteamVR；
     # SteamVR 启动后会自动把显示切到 VR overlay 并开启手柄链接器（--vr 参数已废弃，保留兼容不报错）。
     try:

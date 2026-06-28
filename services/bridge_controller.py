@@ -14,20 +14,27 @@ from ctypes import wintypes
 from pathlib import Path
 
 
-def _repo_root() -> Path:
+def _frozen() -> bool:
+    return bool(getattr(sys, "frozen", False))
+
+
+def _base_dir() -> Path:
+    # 运行时可写目录：打包成 exe 时用 exe 所在目录，源码运行时用仓库根
+    if _frozen():
+        return Path(sys.executable).resolve().parent
     return Path(__file__).resolve().parents[1]
 
 
 def _pid_path() -> Path:
-    return _repo_root() / ".steamvr" / "vr_controller_bridge.pid"
+    return _base_dir() / ".steamvr" / "vr_controller_bridge.pid"
 
 
 def _log_path() -> Path:
-    return _repo_root() / ".steamvr" / "vr_controller_bridge.log"
+    return _base_dir() / ".steamvr" / "vr_controller_bridge.log"
 
 
 def _bridge_script() -> Path:
-    return _repo_root() / "tools" / "vr_controller_bridge.py"
+    return _base_dir() / "tools" / "vr_controller_bridge.py"
 
 
 def _pythonw() -> str:
@@ -37,6 +44,14 @@ def _pythonw() -> str:
         if pythonw.exists():
             return str(pythonw)
     return str(exe)
+
+
+def _launch_cmd() -> list[str]:
+    args = ["--quiet", "--log-file", str(_log_path()), "--pid-file", str(_pid_path())]
+    if _frozen():
+        # 单 exe：用本 exe 以 --run-bridge 再次启动自身来跑链接器
+        return [sys.executable, "--run-bridge", *args]
+    return [_pythonw(), str(_bridge_script()), *args]
 
 
 _STILL_ACTIVE = 259
@@ -102,9 +117,9 @@ class BridgeController:
             return
         try:
             self._proc = subprocess.Popen(
-                [_pythonw(), str(_bridge_script()), "--quiet", "--log-file", str(_log_path())],
+                _launch_cmd(),
                 creationflags=_CREATE_NO_WINDOW,
-                cwd=str(_repo_root()),
+                cwd=str(_base_dir()),
             )
             self._state = "starting"
             self._deadline = time.monotonic() + self.START_TIMEOUT

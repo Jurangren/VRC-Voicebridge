@@ -144,23 +144,26 @@ def read_pressed(vrsystem, idx: int) -> set[str]:
     return pressed
 
 
-def pid_path() -> Path:
-    # 主程序据此判断链接器是否在运行、并在需要时结束它（与 services/bridge_controller.py 约定一致）
+def pid_path(override: str | None = None) -> Path:
+    # 主程序据此判断链接器是否在运行、并在需要时结束它。打包成 exe 时路径由主程序经 --pid-file 指定，
+    # 以保证两边一致（源码运行时默认放仓库根的 .steamvr/）。
+    if override:
+        return Path(override)
     return Path(__file__).resolve().parents[1] / ".steamvr" / "vr_controller_bridge.pid"
 
 
-def write_pid_file() -> None:
+def write_pid_file(override: str | None = None) -> None:
     try:
-        path = pid_path()
+        path = pid_path(override)
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(str(os.getpid()), encoding="utf-8")
     except Exception:
         pass
 
 
-def remove_pid_file() -> None:
+def remove_pid_file(override: str | None = None) -> None:
     try:
-        pid_path().unlink(missing_ok=True)
+        pid_path(override).unlink(missing_ok=True)
     except Exception:
         pass
 
@@ -170,6 +173,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--debug", action="store_true", help="print detected controller buttons")
     parser.add_argument("--quiet", action="store_true", help="suppress console output for SteamVR autostart")
     parser.add_argument("--log-file", help="append bridge status and actions to a log file")
+    parser.add_argument("--pid-file", help="write this process's PID here while running (for the app to track it)")
     return parser.parse_args()
 
 
@@ -180,7 +184,7 @@ def main() -> int:
     if not instance.acquire():
         log("VRC VoiceBridge controller bridge is already running.")
         return 0
-    write_pid_file()
+    write_pid_file(args.pid_file)
 
     try:
         try:
@@ -276,7 +280,7 @@ def main() -> int:
             openvr.shutdown()
             log("Controller bridge exited.")
     finally:
-        remove_pid_file()
+        remove_pid_file(args.pid_file)
         instance.release()
     return 0
 

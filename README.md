@@ -136,9 +136,29 @@ pipwin install pyaudio
 
 在 VRChat 中开启 OSC。默认情况下，本程序会向 127.0.0.1:9000 发送 OSC 消息。
 
+## 下载发布版（免装 Python）
+
+每次推送 `v*` 形式的标签（如 `v1.0.0`）后，GitHub Actions 会自动用 PyInstaller 在
+Windows 上构建并发布一个免安装的压缩包到 Releases 页面：解压后双击 `VRC-VoiceBridge.exe`
+即可运行，无需另装 Python。也可在仓库 Actions 页面手动触发 “Build Release EXE” 工作流先测试构建。
+
+发布一次新版本：
+
+```bash
+git tag v1.0.0
+git push origin v1.0.0
+```
+
+本地自行打包（需先 `pip install pyinstaller`）：
+
+```bash
+pyinstaller --noconfirm vrc-voicebridge.spec
+# 产物在 dist/VRC-VoiceBridge/
+```
+
 ## 启动程序
 
-在项目目录执行：
+从源码运行，在项目目录执行：
 
 ```bash
 python main.py

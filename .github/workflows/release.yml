@@ -1,0 +1,53 @@
+name: Build Release EXE
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch: {}   # 允许在 Actions 页面手动触发，方便不打 tag 也能测试构建
+
+permissions:
+  contents: write          # 创建 Release 需要
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pyinstaller
+
+      - name: Build with PyInstaller
+        run: pyinstaller --noconfirm vrc-voicebridge.spec
+
+      - name: Package zip
+        shell: pwsh
+        run: |
+          $name = "VRC-VoiceBridge-${{ github.ref_name }}-win64"
+          Compress-Archive -Path dist/VRC-VoiceBridge/* -DestinationPath "$name.zip" -Force
+          echo "ASSET=$name.zip" >> $env:GITHUB_ENV
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: VRC-VoiceBridge-win64
+          path: ${{ env.ASSET }}
+          retention-days: 14
+
+      - name: Publish Release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ${{ env.ASSET }}
+          generate_release_notes: true
