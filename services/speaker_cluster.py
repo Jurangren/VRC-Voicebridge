@@ -20,6 +20,57 @@ MODELS_DIR = Path("models")
 MAX_EMBED_SECONDS = 10.0
 
 
+def ensure_speaker_model(model_path: str = "", progress: Callable[[int | None, str], None] | None = None) -> Path:
+    """确保声纹模型就绪并返回其路径：给了路径就校验用它；否则下载默认模型到 models/。
+
+    progress(percent, message)：percent 为 0~100 或 None（None 表示只更新文字、不动进度）。
+    既给独立的「下载模型」按钮用，也给首次使用声纹聚类时按需下载用。
+    """
+    report = progress or (lambda _p, _m: None)
+    if model_path.strip():
+        path = Path(model_path.strip())
+        if not path.exists():
+            raise AppError(f"声纹模型路径不存在：{path}")
+        return path
+
+    path = MODELS_DIR / DEFAULT_MODEL_NAME
+    if path.exists():
+        report(100, "声纹模型已就绪")
+        return path
+
+    MODELS_DIR.mkdir(parents=True, exist_ok=True)
+    part_path = path.with_suffix(".part")
+    report(0, "正在下载声纹模型（约 28MB）...")
+    import requests
+
+    last_error: Exception | None = None
+    for url in DEFAULT_MODEL_URLS:
+        try:
+            with requests.get(url, stream=True, timeout=(10, 600)) as response:
+                response.raise_for_status()
+                total = int(response.headers.get("Content-Length", 0))
+                downloaded = 0
+                with part_path.open("wb") as file:
+                    for chunk in response.iter_content(chunk_size=1024 * 256):
+                        file.write(chunk)
+                        downloaded += len(chunk)
+                        if total:
+                            report(downloaded * 100 // total, "正在下载声纹模型...")
+            part_path.replace(path)
+            report(100, "声纹模型下载完成")
+            return path
+        except Exception as exc:
+            part_path.unlink(missing_ok=True)
+            last_error = exc
+            report(None, f"下载源不可用，尝试下一个...（{exc}）")
+    raise AppError(
+        "声纹模型下载失败："
+        f"{last_error}\n"
+        f"可手动下载 {DEFAULT_MODEL_URLS[0]} 保存到 {path}，"
+        "或在页面“声纹模型路径”里填写已下载的模型文件路径。"
+    ) from last_error
+
+
 class SpeakerEmbedder:
     """sherpa-onnx 声纹嵌入提取器（CAM++ 中英通用模型，CPU 推理）。"""
 
@@ -50,47 +101,11 @@ class SpeakerEmbedder:
 
     @staticmethod
     def _resolve_model_path(model_path: str, report: Callable[[str], None]) -> Path:
-        if model_path.strip():
-            path = Path(model_path.strip())
-            if not path.exists():
-                raise AppError(f"声纹模型路径不存在：{path}")
-            return path
+        # 字符串状态回调适配到 ensure_speaker_model 的 (percent, message) 形式
+        def progress(percent: int | None, message: str) -> None:
+            report(message if percent is None else f"{message} {percent}%")
 
-        path = MODELS_DIR / DEFAULT_MODEL_NAME
-        if path.exists():
-            return path
-
-        MODELS_DIR.mkdir(parents=True, exist_ok=True)
-        part_path = path.with_suffix(".part")
-        report("首次使用声纹聚类，正在下载声纹模型（约 28MB）...")
-        import requests
-
-        last_error: Exception | None = None
-        for url in DEFAULT_MODEL_URLS:
-            try:
-                with requests.get(url, stream=True, timeout=(10, 600)) as response:
-                    response.raise_for_status()
-                    total = int(response.headers.get("Content-Length", 0))
-                    downloaded = 0
-                    with part_path.open("wb") as file:
-                        for chunk in response.iter_content(chunk_size=1024 * 256):
-                            file.write(chunk)
-                            downloaded += len(chunk)
-                            if total:
-                                report(f"正在下载声纹模型... {downloaded * 100 // total}%")
-                part_path.replace(path)
-                report("声纹模型下载完成")
-                return path
-            except Exception as exc:
-                part_path.unlink(missing_ok=True)
-                last_error = exc
-                report(f"下载源不可用，尝试下一个... {exc}")
-        raise AppError(
-            "声纹模型下载失败："
-            f"{last_error}\n"
-            f"可手动下载 {DEFAULT_MODEL_URLS[0]} 保存到 {path}，"
-            "或在页面“声纹模型路径”里填写已下载的模型文件路径。"
-        ) from last_error
+        return ensure_speaker_model(model_path, progress)
 
 
 class OnlineSpeakerClusterer:

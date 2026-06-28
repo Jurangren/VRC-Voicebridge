@@ -359,3 +359,72 @@ loadSavedConfig()
   .then(() => refreshActivePresetIndex())
   .then(() => startPresetPolling())
   .catch((error) => setStatus(`加载配置失败：${error.message || error}`, true));
+
+// ---------- 本地模型下载 ----------
+const downloadSpeakerModel = document.getElementById('downloadSpeakerModel');
+const downloadWhisperModel = document.getElementById('downloadWhisperModel');
+const modelDownloadFill = document.getElementById('modelDownloadFill');
+const modelDownloadLabel = document.getElementById('modelDownloadLabel');
+let modelPollTimer = null;
+
+function setModelButtonsDisabled(disabled) {
+  if (downloadSpeakerModel) downloadSpeakerModel.disabled = disabled;
+  if (downloadWhisperModel) downloadWhisperModel.disabled = disabled;
+}
+
+function renderModelStatus(s) {
+  if (modelDownloadFill) modelDownloadFill.style.width = `${Math.min(Math.max(s.percent || 0, 0), 100)}%`;
+  if (modelDownloadLabel && s.message) modelDownloadLabel.textContent = s.message;
+}
+
+async function pollModelStatus() {
+  if (modelPollTimer) clearTimeout(modelPollTimer);
+  try {
+    const res = await fetch('/api/models/status');
+    const s = await res.json();
+    renderModelStatus(s);
+    if (s.running) {
+      setModelButtonsDisabled(true);
+      modelPollTimer = setTimeout(pollModelStatus, 500);
+    } else {
+      setModelButtonsDisabled(false);
+    }
+  } catch (_) {
+    modelPollTimer = setTimeout(pollModelStatus, 1500);
+  }
+}
+
+async function startModelDownload(target) {
+  try {
+    const res = await fetch('/api/models/download', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({target}),
+    });
+    if (res.status === 409) {
+      // 已有任务在跑：直接接着轮询它
+      setModelButtonsDisabled(true);
+      pollModelStatus();
+      return;
+    }
+    const data = await res.json();
+    if (!data.ok) {
+      if (modelDownloadLabel) modelDownloadLabel.textContent = data.error || '启动下载失败';
+      return;
+    }
+    setModelButtonsDisabled(true);
+    if (modelDownloadLabel) modelDownloadLabel.textContent = '开始下载...';
+    pollModelStatus();
+  } catch (error) {
+    if (modelDownloadLabel) modelDownloadLabel.textContent = `启动下载失败：${error.message || error}`;
+  }
+}
+
+if (downloadSpeakerModel) downloadSpeakerModel.addEventListener('click', () => startModelDownload('speaker'));
+if (downloadWhisperModel) downloadWhisperModel.addEventListener('click', () => startModelDownload('whisper'));
+
+// 进入页面时若已有下载在进行，恢复进度显示
+fetch('/api/models/status')
+  .then((res) => res.json())
+  .then((s) => { if (s.running) { renderModelStatus(s); setModelButtonsDisabled(true); pollModelStatus(); } })
+  .catch(() => {});

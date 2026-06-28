@@ -385,6 +385,24 @@ def create_web_app(config_manager: ConfigManager, error_handler: ErrorHandler, s
             error_handler.report("保存实时语音翻译配置失败", exc)
             return jsonify({"ok": False, "error": str(exc)}), 500
 
+    @app.post("/api/models/download")
+    def models_download():
+        from services.model_downloader import MODEL_DOWNLOADER
+
+        payload = request.get_json(silent=True) or {}
+        target = str(payload.get("target", "")).strip()
+        if target not in {"speaker", "whisper"}:
+            return jsonify({"ok": False, "error": "未知下载目标"}), 400
+        if not MODEL_DOWNLOADER.start(target, config_manager.get()):
+            return jsonify({"ok": False, "error": "已有下载任务在进行中"}), 409
+        return jsonify({"ok": True})
+
+    @app.get("/api/models/status")
+    def models_status():
+        from services.model_downloader import MODEL_DOWNLOADER
+
+        return jsonify(MODEL_DOWNLOADER.status())
+
     @app.get("/devices")
     def devices():
         try:

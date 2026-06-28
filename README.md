@@ -142,6 +142,9 @@ pipwin install pyaudio
 Windows 上构建并发布一个免安装的压缩包到 Releases 页面：解压后双击 `VRC-VoiceBridge.exe`
 即可运行，无需另装 Python。也可在仓库 Actions 页面手动触发 “Build Release EXE” 工作流先测试构建。
 
+发布版**不内置模型权重**（声纹模型、本地 Whisper 模型），首次使用本地识别/声纹会自动下载，
+也可在「实时语音翻译」页面的「本地模型下载」里点按钮提前下载（带进度条）。
+
 发布一次新版本：
 
 ```bash

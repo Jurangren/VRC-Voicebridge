@@ -191,6 +191,21 @@
       </div>
     </details>
 
+    <details class="card" open>
+      <summary>本地模型下载</summary>
+      <div class="card-body">
+        <p class="hint">发布版不内置模型，首次使用本地识别/声纹前可在这里提前下载（也会在首次使用时自动下载）。声纹模型约 28MB；本地 Whisper 模型按所选型号较大（数百 MB ~ 1.5GB），识别时需要 NVIDIA GPU，但下载本身不需要。</p>
+        <div class="actions">
+          <button type="button" id="downloadSpeakerModel" class="btn-primary">下载声纹模型（约 28MB）</button>
+          <button type="button" id="downloadWhisperModel" class="btn-primary">下载本地 Whisper 模型（当前所选）</button>
+        </div>
+        <div class="meter-wrap" style="margin-top:12px;">
+          <span class="meter-label" id="modelDownloadLabel">未开始</span>
+          <div class="vad-meter"><div id="modelDownloadFill" class="vad-meter-fill"></div></div>
+        </div>
+      </div>
+    </details>
+
     <details class="card">
       <summary>最近错误</summary>
       <div class="card-body">
