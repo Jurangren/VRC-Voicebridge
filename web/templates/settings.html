@@ -205,14 +205,11 @@
       </section>
 
       <section>
-        <h2>VR 快捷菜单 / 控制面板</h2>
+        <h2>控制面板 / VR 仪表盘</h2>
         <div class="grid">
-          <label>快捷菜单 打开热键 <input name="vr_menu_open_hotkey" value="{{ config.vr_menu_open_hotkey }}"></label>
-          <label>快捷菜单 切换热键 <input name="vr_menu_cycle_hotkey" value="{{ config.vr_menu_cycle_hotkey }}"></label>
-          <label>菜单停留确认秒数 <input name="vr_menu_dwell_seconds" type="number" step="0.1" min="0.5" max="6" value="{{ config.vr_menu_dwell_seconds }}"></label>
           <label>控制面板热键（可留空）<input name="control_window_hotkey" value="{{ config.control_window_hotkey }}"></label>
         </div>
-        <p class="hint">VR 模式下：手柄<b>长按 2 秒左手菜单键</b>打开快捷菜单（发送「打开热键」），之后<b>短按菜单键</b>切换到下一项（发送「切换热键」）；停在某项不动，到达「停留确认秒数」后自动执行该项。菜单含：关闭、实时翻译开关、聊天框翻译显示开关、下一个预设、图片翻译。左手菜单键同时与别的键按下时仍作为和弦修饰键，不会误触菜单。控制面板是网页设置之外的桌面快捷窗口，可从托盘「打开控制面板」打开，设置热键后也可一键唤出。</p>
+        <p class="hint">现在只有一个启动器：先以桌面模式运行，并自动在后台尝试连接 SteamVR——SteamVR 一旦启动就把字幕等显示切到 VR overlay，并自动开启手柄链接器。桌面控制面板是网页设置之外的快捷窗口，可从托盘「打开控制面板」打开，设置热键后也可一键唤出。连上 SteamVR 后还会在仪表盘里注册一块可交互面板：按系统键调出 SteamVR 悬浮界面，在底部点开「VRC VoiceBridge」即可用手柄激光指针点开关、按上下箭头调数值，并可查看/点按手柄链接器的「已启动/未启动」（点击切换，过程中显示启动中/关闭中）。</p>
       </section>
 
       <section>

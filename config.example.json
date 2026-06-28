@@ -116,8 +116,5 @@
   "image_translate_hotkey": "ctrl+alt+i",
   "image_translate_window_keyword": "VRChat",
   "image_translate_result_seconds": 5.0,
-  "vr_menu_open_hotkey": "ctrl+alt+m",
-  "vr_menu_cycle_hotkey": "ctrl+alt+n",
-  "vr_menu_dwell_seconds": 1.5,
   "control_window_hotkey": ""
 }

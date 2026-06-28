@@ -1,7 +1,7 @@
 """SteamVR overlay 模式：把所有显示类浮窗渲染成纹理，推送到一块 HMD 锁定的 overlay。
 
 VROverlayUI 同时实现桌面版 SpeechIndicator 与 StatusOverlay 的全部公开方法，
-因此 main.py 在 --vr 模式下可直接用它替换两者，调用方无感知。所有状态修改都通过
+因此 main.py 连上 SteamVR 时可经 OverlayRouter 用它替换桌面两者，调用方无感知。所有状态修改都通过
 tkinter 的 root.after 投递到主线程，与桌面版一致的单线程模型，避免 ctypes 调用竞争。
 """
 from __future__ import annotations
@@ -94,6 +94,8 @@ class VRSession:
             ) from exc
 
         self._overlay = openvr.IVROverlay()
+        self._vrsystem = openvr.VRSystem()
+        self.quit_requested = False  # 检测到 SteamVR 退出时置位，供上层断开重连
 
         # 字幕/状态 overlay：相对 HMD 定位，正前方 distance_m、略微下移 vertical_m，跟随视野
         matrix = openvr.HmdMatrix34_t()
@@ -149,6 +151,18 @@ class VRSession:
                     pass
         except Exception:
             pass
+        # 系统事件队列：检测 SteamVR 退出（VRSystem.pollNextEvent 在本版 pyopenvr 里返回 bool）
+        try:
+            sys_event = self._openvr.VREvent_t()
+            while self._vrsystem.pollNextEvent(sys_event):
+                if sys_event.eventType == self._openvr.VREvent_Quit:
+                    self.quit_requested = True
+                    try:
+                        self._vrsystem.acknowledgeQuit_Exiting()
+                    except Exception:
+                        pass
+        except Exception:
+            pass
 
     def shutdown(self) -> None:
         try:
@@ -175,8 +189,8 @@ class VROverlayUI:
         self._phase_counter = 0
         self._tick_job: str | None = None
         self._last_empty = False
-        # 快捷菜单状态：None 或 {"items", "index", "deadline", "dwell"}（由 main.py 在主线程更新）
-        self._menu: dict | None = None
+        # SteamVR 仪表盘交互面板（VR 模式下可选），由 _tick 驱动
+        self._dashboard = None
         # 图片翻译 overlay 状态：None | "loading" | "image"
         self._img_mode: str | None = None
         self._img_result = None      # PIL.Image，结果图
@@ -199,6 +213,21 @@ class VROverlayUI:
     def shutdown(self) -> None:
         self.stop()
         self._session.shutdown()
+
+    def steamvr_quit_requested(self) -> bool:
+        return bool(self._session.quit_requested)
+
+    def create_dashboard(self, config_manager, callbacks, status_provider):
+        """在同一个 OpenVR 会话上创建可交互的 SteamVR 仪表盘面板，并交给本对象的 _tick 驱动。"""
+        from ui.vr_dashboard import VRDashboard
+
+        try:
+            self._dashboard = VRDashboard(
+                self._session._openvr, self._session._overlay, config_manager, callbacks, status_provider
+            )
+        except Exception:
+            self._dashboard = None
+        return self._dashboard
 
     # ---------- SpeechIndicator API ----------
 
@@ -240,14 +269,6 @@ class VROverlayUI:
         self._img_mode = None
         self._img_result = None
         self._img_panel = None
-
-    # ---------- 快捷菜单 API（由 main.py 在主线程调用）----------
-
-    def menu_open(self, items: list[dict], index: int, deadline: float, dwell: float) -> None:
-        self._menu = {"items": list(items), "index": int(index), "deadline": float(deadline), "dwell": float(dwell)}
-
-    def menu_close(self) -> None:
-        self._menu = None
 
     # ---------- StatusOverlay API ----------
 
@@ -306,6 +327,10 @@ class VROverlayUI:
         # 每帧排空 OpenVR 事件队列，避免队列堆积导致 overlay 卡死（见 VRSession.poll_events）
         self._session.poll_events()
 
+        # 驱动 SteamVR 仪表盘面板（处理激光指针点击 + 按需重绘）
+        if self._dashboard is not None:
+            self._dashboard.tick()
+
         # 过期清理 + 末尾渐隐
         kept = []
         for item in self._subtitles:
@@ -346,22 +371,11 @@ class VROverlayUI:
         self._phase_counter = (self._phase_counter + 1) % 3
         if self._phase_counter == 0:
             self._phase_step = (self._phase_step + 1) % 16
-        menu_payload = None
-        if self._menu is not None:
-            dwell = max(self._menu.get("dwell", 1.0), 0.001)
-            remaining = self._menu.get("deadline", now) - now
-            menu_payload = {
-                "items": self._menu.get("items", []),
-                "index": self._menu.get("index", 0),
-                "dwell_ratio": min(max(remaining / dwell, 0.0), 1.0),
-            }
-
         state = {
             "subtitles": self._subtitles,
             "indicators": indicators,
             "status": status_payload,
             "toast": self._toast,
-            "menu": menu_payload,
             "phase": self._phase_step / 16.0,
         }
 

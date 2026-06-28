@@ -11,11 +11,13 @@ import webbrowser
 from core.config import PRESET_COUNT, ConfigManager
 from core.errors import ErrorHandler
 from core.pipeline import AppPipeline
+from services.bridge_controller import BridgeController
 from services.mic_listener import MicrophoneListener
 from services.osc_client import VrcOscClient
 from ui.control_window import ControlWindow
 from ui.hotkey import HotkeyManager
 from ui.input_window import InputWindow
+from ui.overlay_router import OverlayRouter
 from ui.speech_indicator import SpeechIndicator
 from ui.status_overlay import StatusOverlay
 from ui.tray_app import TrayApp
@@ -28,26 +30,26 @@ from services.realtime_pipeline import PIPELINE
 class Application:
     TYPING_REFRESH_MS = 1500
 
-    def __init__(self, vr_mode: bool = False):
+    def __init__(self):
         self.root = tk.Tk()
         self.root.withdraw()
         self.root.title("VRC VoiceBridge")
 
         self.config_manager = ConfigManager()
         self.error_handler = ErrorHandler(self.root)
-        self.vr_mode = vr_mode
+        # 主线程调度队列（_post 使用）：keyboard 热键回调/托盘/flask 都在各自线程里，绝不能直接碰
+        # tkinter（含 root.after），否则跑一段时间后 Tk 事件循环会被弄挂。需在 OverlayRouter 之前就绪。
+        self._call_queue: queue.Queue = queue.Queue()
+        # 统一启动器：始终先建桌面浮窗，再用 OverlayRouter 在桌面/VR 之间切换显示目标——
+        # 连上 SteamVR 时切到 VR overlay，断开时回到桌面。pipeline/web 持有 router（稳定引用），
+        # 不必在接入/断开时重新接线。
+        self._desktop_status = StatusOverlay(self.root, self.config_manager)
+        self._desktop_speech = SpeechIndicator(self.root, self._speech_capture_status)
+        self.overlay_router = OverlayRouter(self._desktop_status, self._desktop_speech, self._post)
+        self.status_overlay = self.overlay_router
+        self.speech_indicator = self.overlay_router
         self.vr_ui = None
-        if vr_mode:
-            # VR 模式：所有显示类浮窗（字幕/指示器/状态/toast）改在 SteamVR overlay 显示，
-            # 桌面不再绘制；输入框仍走桌面（交互式，需实体键盘）。一个对象同时承担两者角色。
-            from ui.vr_overlay import VROverlayUI
-
-            self.vr_ui = VROverlayUI(self.root, self._speech_capture_status, self.config_manager)
-            self.status_overlay = self.vr_ui
-            self.speech_indicator = self.vr_ui
-        else:
-            self.status_overlay = StatusOverlay(self.root, self.config_manager)
-            self.speech_indicator = SpeechIndicator(self.root, self._speech_capture_status)
+        self.bridge = BridgeController()
         self.pipeline = AppPipeline(
             self.config_manager,
             self.error_handler,
@@ -70,8 +72,6 @@ class Application:
         self.osc_toggle_hotkey_manager = HotkeyManager(self.toggle_listen_osc)
         self.realtime_toggle_hotkey_manager = HotkeyManager(self.toggle_realtime_translate)
         self.image_translate_hotkey_manager = HotkeyManager(self.on_image_translate_hotkey)
-        self.vr_menu_open_hotkey_manager = HotkeyManager(self.on_vr_menu_open_hotkey)
-        self.vr_menu_cycle_hotkey_manager = HotkeyManager(self.on_vr_menu_cycle_hotkey)
         self.control_window_hotkey_manager = HotkeyManager(self.show_control)
         self.preset_hotkey_managers = [HotkeyManager(lambda index=index: self.switch_preset(index)) for index in range(1, PRESET_COUNT + 1)]
         self.control_window = ControlWindow(
@@ -105,15 +105,6 @@ class Application:
         self._img_queue: queue.Queue = queue.Queue()
         # 出图后自动消失计时器句柄（手动关闭/重新翻译时取消）
         self._img_hide_job: str | None = None
-        # 通用主线程调度队列：keyboard 热键回调/托盘/flask 都在各自线程里，绝不能直接碰 tkinter
-        # （含 root.after），否则跑一段时间后 Tk 事件循环会被弄挂——浮窗卡死、热键动作失效。
-        # 这些线程统一通过 _post 把动作投递到此队列，由主线程的 _call_poll 取出执行。
-        self._call_queue: queue.Queue = queue.Queue()
-        # VR 快捷菜单：菜单键打开/循环下一项，停留到期自动确认当前项
-        self._vr_menu_open = False
-        self._vr_menu_index = 0
-        self._vr_menu_items: list[dict] = []
-        self._vr_menu_dwell_job: str | None = None
 
     def _speech_capture_status(self) -> dict:
         """返回双说话指示器状态：translate=实时翻译听到的声音（蓝），mic=自己麦克风 VAD（绿）。"""
@@ -152,6 +143,7 @@ class Application:
         self._keep_alive()
         self._img_poll()
         self._call_poll()
+        self._vr_watch()  # 尝试连接 SteamVR；连上则把显示切到 VR 并自动开启链接器
         self.root.mainloop()
 
     def _handle_signal(self, *_args) -> None:
@@ -184,6 +176,68 @@ class Application:
         finally:
             if not self._quitting:
                 self.root.after(20, self._call_poll)
+
+    # ---------- SteamVR 动态接入/断开 ----------
+
+    def _vr_watch(self) -> None:
+        # 周期检查：未连上就尝试连接（SteamVR 没开就静默等待）；已连上则检测 SteamVR 是否已退出
+        if self._quitting:
+            return
+        try:
+            if self.vr_ui is None:
+                self._try_attach_vr()
+            elif self.vr_ui.steamvr_quit_requested():
+                self._detach_vr()
+        except Exception as exc:
+            self.error_handler.report("SteamVR 连接检查失败", exc)
+        self.root.after(2500, self._vr_watch)
+
+    def _try_attach_vr(self) -> None:
+        # 便宜的预检：SteamVR 没在跑时 isHmdPresent() 为假，直接返回，避免每次都去做完整的 openvr.init
+        try:
+            import openvr
+
+            if not openvr.isHmdPresent():
+                return
+        except Exception:
+            return
+
+        from ui.vr_overlay import VROverlayUI
+
+        try:
+            vr = VROverlayUI(self.root, self._speech_capture_status, self.config_manager)
+        except Exception:
+            return  # SteamVR 未运行/未就绪，下次再试（静默，不打扰桌面使用）
+        self.vr_ui = vr
+        self.overlay_router.set_vr(vr)
+        vr.start()
+        vr.create_dashboard(
+            self.config_manager,
+            callbacks={
+                "toggle_realtime": self._toggle_realtime_translate,
+                "toggle_osc": self._toggle_listen_osc,
+                "apply_preset": self._switch_preset,
+                "show_input": self.show_input,
+                "image_translate": self._handle_image_translate_hotkey,
+                "bridge_status": self.bridge.status,
+                "bridge_toggle": self.bridge.toggle,
+            },
+            status_provider=self._control_status,
+        )
+        self.bridge.start()  # 连上 SteamVR 后自动开启手柄链接器
+        print(f"[{time.strftime('%H:%M:%S')}] 已连接 SteamVR：显示切换到 VR overlay，已启动手柄链接器")
+
+    def _detach_vr(self) -> None:
+        # SteamVR 退出：断开 VR overlay，显示回到桌面浮窗；链接器随 SteamVR 退出自行结束
+        vr = self.vr_ui
+        self.vr_ui = None
+        self.overlay_router.set_vr(None)
+        if vr is not None:
+            try:
+                vr.shutdown()
+            except Exception:
+                pass
+        print(f"[{time.strftime('%H:%M:%S')}] SteamVR 已退出：显示回到桌面，等待下次连接")
 
     def show_input(self) -> None:
         self._post(self.toggle_input)
@@ -236,8 +290,6 @@ class Application:
         self.osc_toggle_hotkey_manager.unregister()
         self.realtime_toggle_hotkey_manager.unregister()
         self.image_translate_hotkey_manager.unregister()
-        self.vr_menu_open_hotkey_manager.unregister()
-        self.vr_menu_cycle_hotkey_manager.unregister()
         self.control_window_hotkey_manager.unregister()
         for manager in self.preset_hotkey_managers:
             manager.unregister()
@@ -250,7 +302,6 @@ class Application:
         self.reload_osc_toggle_hotkey()
         self.reload_realtime_toggle_hotkey()
         self.reload_image_translate_hotkey()
-        self.reload_vr_menu_hotkeys()
         self.reload_control_window_hotkey()
         self.reload_realtime_pipeline()
 
@@ -447,97 +498,6 @@ class Application:
             self._img_state = "idle"
             self.vr_ui.image_hide()
 
-    # ---------- VR 快捷菜单 ----------
-
-    def reload_vr_menu_hotkeys(self) -> None:
-        try:
-            config = self.config_manager.get()
-            open_hotkey = config.vr_menu_open_hotkey.strip()
-            cycle_hotkey = config.vr_menu_cycle_hotkey.strip()
-            if open_hotkey:
-                self.vr_menu_open_hotkey_manager.register(open_hotkey)
-            if cycle_hotkey:
-                self.vr_menu_cycle_hotkey_manager.register(cycle_hotkey)
-        except Exception as exc:
-            self.error_handler.report("VR 快捷菜单热键注册失败", exc)
-
-    def on_vr_menu_open_hotkey(self) -> None:
-        self._post(self._handle_vr_menu_open)
-
-    def on_vr_menu_cycle_hotkey(self) -> None:
-        self._post(self._handle_vr_menu_cycle)
-
-    def _vr_menu_build_items(self) -> list[dict]:
-        """构造菜单项（带实时状态文本）。索引 0 为「关闭菜单」，作为默认高亮的安全项：
-        误触菜单键后什么都不做、停留到期即自动关闭。"""
-        config = self.config_manager.get()
-        running = bool(PIPELINE.status().get("running"))
-        osc_on = bool(config.speech_translate_osc_enabled)
-        preset_name = config.preset_names[config.active_preset_index - 1]
-        return [
-            {"key": "cancel", "label": "关闭菜单", "value": ""},
-            {"key": "realtime", "label": "实时翻译", "value": "运行中" if running else "已停止"},
-            {"key": "osc", "label": "聊天框翻译显示", "value": "开" if osc_on else "关"},
-            {"key": "next_preset", "label": "下一个预设", "value": f"{config.active_preset_index}·{preset_name}"},
-            {"key": "image", "label": "图片翻译", "value": ""},
-        ]
-
-    def _handle_vr_menu_open(self) -> None:
-        # 手柄长按左 B 触发：打开菜单并高亮第一项（已打开则保持不动，仅重置停留计时）
-        if self.vr_ui is None:
-            self.status_overlay.show_hint("VR 快捷菜单仅在 VR 模式可用")
-            return
-        if not self._vr_menu_open:
-            self._vr_menu_open = True
-            self._vr_menu_index = 0
-        self._vr_menu_refresh()
-
-    def _handle_vr_menu_cycle(self) -> None:
-        # 手柄短按 B 触发：菜单已打开则切到下一项；未打开则忽略（需先长按左 B 调出）
-        if self.vr_ui is None or not self._vr_menu_open:
-            return
-        count = max(len(self._vr_menu_items), 1)
-        self._vr_menu_index = (self._vr_menu_index + 1) % count
-        self._vr_menu_refresh()
-
-    def _vr_menu_refresh(self) -> None:
-        # 刷新菜单内容并重置停留计时：每次按菜单键都重新开始倒计时，停手后才会自动确认
-        items = self._vr_menu_build_items()
-        self._vr_menu_items = items
-        if self._vr_menu_index >= len(items):
-            self._vr_menu_index = 0
-        dwell = max(0.5, float(self.config_manager.get().vr_menu_dwell_seconds))
-        deadline = time.monotonic() + dwell
-        self.vr_ui.menu_open(items, self._vr_menu_index, deadline, dwell)
-        if self._vr_menu_dwell_job is not None:
-            self.root.after_cancel(self._vr_menu_dwell_job)
-        self._vr_menu_dwell_job = self.root.after(int(dwell * 1000), self._vr_menu_confirm)
-
-    def _vr_menu_confirm(self) -> None:
-        self._vr_menu_dwell_job = None
-        if not self._vr_menu_open:
-            return
-        items = self._vr_menu_items
-        key = items[self._vr_menu_index]["key"] if 0 <= self._vr_menu_index < len(items) else "cancel"
-        self._vr_menu_close()
-        if key == "realtime":
-            self._toggle_realtime_translate()
-        elif key == "osc":
-            self._toggle_listen_osc()
-        elif key == "next_preset":
-            self._switch_next_preset()
-        elif key == "image":
-            self._handle_image_translate_hotkey()
-        # key == "cancel"：仅关闭，无动作
-
-    def _vr_menu_close(self) -> None:
-        self._vr_menu_open = False
-        if self._vr_menu_dwell_job is not None:
-            self.root.after_cancel(self._vr_menu_dwell_job)
-            self._vr_menu_dwell_job = None
-        if self.vr_ui is not None:
-            self.vr_ui.menu_close()
-
     # ---------- 桌面控制面板 ----------
 
     def reload_control_window_hotkey(self) -> None:
@@ -726,13 +686,14 @@ class Application:
         self.osc_toggle_hotkey_manager.unregister()
         self.realtime_toggle_hotkey_manager.unregister()
         self.image_translate_hotkey_manager.unregister()
-        self.vr_menu_open_hotkey_manager.unregister()
-        self.vr_menu_cycle_hotkey_manager.unregister()
         self.control_window_hotkey_manager.unregister()
         self._cancel_img_hide_job()
-        self._vr_menu_close()
         for manager in self.preset_hotkey_managers:
             manager.unregister()
+        try:
+            self.bridge.stop()  # 退出时一并关闭手柄链接器
+        except Exception:
+            pass
         if self.vr_ui is not None:
             self.vr_ui.shutdown()
         self.tray.stop()
@@ -740,12 +701,10 @@ class Application:
 
 
 if __name__ == "__main__":
-    vr_mode = "--vr" in sys.argv[1:]
+    # 统一启动器：不再区分桌面/VR。默认先以桌面模式运行，并在后台尝试连接 SteamVR；
+    # SteamVR 启动后会自动把显示切到 VR overlay 并开启手柄链接器（--vr 参数已废弃，保留兼容不报错）。
     try:
-        Application(vr_mode=vr_mode).start()
+        Application().start()
     except Exception as exc:
-        # VR 模式下 SteamVR 未启动等情况会在此抛出，给出清晰提示而非堆栈
         print(f"启动失败：{exc}")
-        if vr_mode:
-            print("提示：--vr 模式需要先启动 SteamVR。")
         sys.exit(1)
